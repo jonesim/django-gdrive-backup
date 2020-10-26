@@ -1,0 +1,134 @@
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <style>
+        html * {
+            padding: 0;
+            margin: 0;
+        }
+
+        body * * {
+            padding: 0;
+        }
+
+        body {
+            font: medium sans-serif;
+            background: #eee;
+            color: #000;
+        }
+
+        div {
+            padding: 10px 20px;
+        }
+
+        .header {
+            width: 100%;
+            background-color: #00004e;
+            color: white;
+        }
+
+        .btn {
+            display: inline-block;
+            border: 1px solid transparent;
+            border-radius: .25rem;
+            background-color: #0066FF;
+            color: white;
+            text-decoration: none;
+            padding: .25rem .5rem;
+        }
+
+        .btn:hover {
+            background-color: #0044ee;
+            color: white;
+        }
+
+        td {
+            padding-right: 20px;
+            padding-bottom: 20px;
+        }
+    </style>
+    <script>
+        function backup_now() {
+            if (confirm('Back up site now?')) {
+                window.location.href = "{% url 'backup-now' %}"
+            }
+        }
+    </script>
+</head>
+<body>
+<div class="header">
+    <h1> Django backup</h1>
+</div>
+<div>
+
+    <br>
+    <br>
+    <table>
+        <tr>
+            <td><b>Google Drive Folder</b></td>
+            <td><a class="btn" target="_blank" href="{{ webViewLink }}">{{ name }}</a>
+            </td>
+        </tr>
+        <tr>
+            <td>{{ space_used|floatformat }} GB used of {{ space_available|floatformat }} GB</td>
+            <td>
+                <buton class="btn" onclick="backup_now()">BACKUP NOW</buton>
+            </td>
+        </tr>
+    </table>
+    <br>
+    <br>
+    <b>Database Files</b>
+    <br>
+    <br>
+    <table>
+        {% for f in files %}
+            <tr>
+                <td>
+                    {{ f.name }}
+                </td>
+                <td>
+                    {{ f.modifiedTime|date:"D d M Y  h:i" }}
+                </td>
+                <td>
+                    {{ f.size }}
+                </td>
+                <td>
+                    {{ f.id }}
+                </td>
+                <td>
+                    {{ f.md5Checksum }}
+                </td>
+            </tr>
+        {% endfor %}
+    </table>
+    <br>
+    <br>
+    <b>Deleted Files</b>
+    <br>
+    <br>
+    <table>
+        {% for f in deleted_files %}
+            <tr>
+                <td>
+                    {{ f.name }}
+                </td>
+                <td>
+                    {{ f.modifiedTime|date:"D d M Y  h:i" }}
+                </td>
+                <td>
+                    {{ f.size }}
+                </td>
+                <td>
+                    {{ f.id }}
+                </td>
+                <td>
+                    {{ f.md5Checksum }}
+                </td>
+            </tr>
+        {% endfor %}
+    </table>
+</div>
+</body>
+</html>
