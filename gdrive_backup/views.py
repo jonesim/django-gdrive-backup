@@ -7,7 +7,7 @@ from .backup import Backup
 
 class BackupInfo(PermissionRequiredMixin, TemplateView):
 
-    template_name = "info.html"
+    template_name = "gdrive_backup/info.html"
     permission_required = 'access_admin'
 
     def get_context_data(self, **kwargs):

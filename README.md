@@ -1,5 +1,7 @@
 
-**django-gdrive-backup** Backs up django postgres databases, local folders and S3 folders to a Google Drive folder through a google service account.
+**django-gdrive-backup** 
+
+Backs up django postgres databases, local folders and S3 folders to a Google Drive folder through a google service account.
 
 **Create service account**
 
