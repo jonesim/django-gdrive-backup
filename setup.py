@@ -5,14 +5,15 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="django-gdrive-backup",
-    version="0.0.3",
+    version="0.0.4",
     author="Ian Jones",
     description=("Backs up django postgres databases, local folders and S3 folders to a Google Drive folder "
                  "through a google service account."),
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/jonesim/django-gdrive-backup",
-    packages=setuptools.find_packages(),
+    include_package_data=True,
+    packages=['gdrive_backup'],
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
