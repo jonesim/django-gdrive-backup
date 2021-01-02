@@ -54,6 +54,11 @@
                 window.location.href = "{% url 'backup-now' %}"
             }
         }
+        function empty_trash() {
+            if (confirm('Empty trash?')) {
+                window.location.href = "{% url 'empty-trash' %}"
+            }
+        }
     </script>
 </head>
 <body>
@@ -74,6 +79,13 @@
             <td>{{ space_used|floatformat }} GB used of {{ space_available|floatformat }} GB</td>
             <td>
                 <buton class="btn" onclick="backup_now()">BACKUP NOW</buton>
+            </td>
+        </tr>
+        <tr>
+            <td>
+            </td>
+            <td>
+                <buton class="btn btn-warning" onclick="empty_trash()">EMPTY TRASH</buton>
             </td>
         </tr>
     </table>

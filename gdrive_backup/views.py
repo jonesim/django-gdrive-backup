@@ -1,6 +1,8 @@
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.views.generic import TemplateView
 from django.shortcuts import redirect
+from encrypted_credentials import django_credentials
+from google_client.drive import GoogleDrive
 from .tasks import backup
 from .backup import Backup
 
@@ -26,4 +28,13 @@ class BackupView(PermissionRequiredMixin, TemplateView):
 
     def get(self, request, *args, **kwargs):
         backup.delay()
+        return redirect('backup-info')
+
+
+class EmptyTrashView(PermissionRequiredMixin, TemplateView):
+    permission_required = 'access_admin'
+
+    def get(self, request, *args, **kwargs):
+        drive = GoogleDrive(django_credentials.get_credentials('drive'))
+        drive.service.files().emptyTrash().execute()
         return redirect('backup-info')

@@ -1,1 +1,5 @@
 /__init__.py
+/.idea/
+/build/
+/dist/
+/django_gdrive_backup.egg-info/
