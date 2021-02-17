@@ -3,12 +3,25 @@ import datetime
 import logging
 import subprocess
 import urllib.parse
+import requests
 from .base_backup import BaseBackup
 from .prune_backups import PruneBackups
 from .compression import decompress, compress
 
 logger = logging.getLogger(__name__)
 compression = 'bz2'
+
+
+def get_ip_address():
+    try:
+        ip_response = requests.get('https://api.ipify.org/')
+        if ip_response.status_code == 200 and len(ip_response.text) < 16:
+            ip_address = ip_response.text.replace('.', '_')
+        else:
+            ip_address = 'fail'
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError):
+        ip_address = 'exception'
+    return ip_address
 
 
 class DatabaseUploadError(Exception):
@@ -26,7 +39,8 @@ class BackupDb(BaseBackup):
         logger.info('Backing up database')
         if self.postgres_backup.schema:
             logger.info(' schema ' + self.postgres_backup.schema)
-        backup_filename = self.postgres_backup.backup_db(self.local_backup_dir)
+        filename = f'db_ip-{get_ip_address()}-date-{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}'
+        backup_filename = self.postgres_backup.backup_db(self.local_backup_dir, filename)
         local_path = os.path.join(self.local_backup_dir, backup_filename)
         logger.info('Copying backup to Google Drive')
         with open(local_path, 'rb') as backup_stream:
@@ -42,9 +56,9 @@ class BackupDb(BaseBackup):
                                                  local_folder=self.local_backup_dir)
         self.postgres_backup.restore_db(os.path.join(self.local_backup_dir, file_name))
 
-    def get_db_backup_files(self, trashed=False):
-        return self.drive.file_list(q=self.drive.build_q(trashed=trashed, folder=self.base_backup_dir)
-                                    + " and mimeType contains 'application/x-'", orderBy='createdTime desc')
+    def get_db_backup_files(self, trashed=False, extra_q=''):
+        return self.drive.file_list(q=f"{self.drive.build_q(trashed=trashed, folder=self.base_backup_dir)}"
+                                    f" and mimeType contains 'application/x-'{extra_q}", orderBy='createdTime desc')
 
     def get_latest_db_backup(self):
         files = self.get_db_backup_files()
@@ -52,7 +66,7 @@ class BackupDb(BaseBackup):
             return files[0]
 
     def prune_old_backups(self, recipe):
-        backups = self.get_db_backup_files()
+        backups = self.get_db_backup_files(extra_q=f" and name contains '{get_ip_address()}'")
         backup_dict = {b['createdTime']: b for b in backups}
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
@@ -75,10 +89,9 @@ class PostgresBackup:
         self.psql(['-f', decompressed_name])
         os.remove(decompressed_name)
 
-    def backup_db(self, backup_local_db_dir):
+    def backup_db(self, backup_local_db_dir, filename):
         if not os.path.exists(backup_local_db_dir):
             os.makedirs(backup_local_db_dir)
-        filename = 'db_' + datetime.datetime.today().strftime('%Y_%m_%d_%H_%M')
         logger.info('Creating backup file ' + filename)
         backup_path = backup_local_db_dir + '/' + filename
         with open(backup_path, 'wb') as db_backup:
