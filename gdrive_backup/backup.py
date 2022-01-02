@@ -1,3 +1,5 @@
+from tempfile import gettempdir
+
 from django.conf import settings
 from encrypted_credentials import django_credentials
 from .backup_db import BackupDb
@@ -16,13 +18,14 @@ class Backup:
 
     @staticmethod
     def get_backup_db(schema=None):
-        google_directory = settings.BACKUP_GDRIVE_DB
+        google_directory = getattr(settings, 'BACKUP_GDRIVE_DB', settings.BACKUP_GDRIVE_DIR + '/db')
         if schema:
             google_directory += '/' + schema
         return BackupDb(django_credentials.get_credentials('drive'),
                         google_directory,
                         settings.DATABASES['default'],
-                        settings.BACKUP_LOCAL_DB_DIR, schema=schema)
+                        getattr(settings, 'BACKUP_LOCAL_DB_DIR', gettempdir()),
+                        schema=schema)
 
     def backup_db_and_folders(self):
         db = self.get_backup_db()
