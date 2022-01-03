@@ -1,11 +1,8 @@
 import io
 import boto3
 import hashlib
-import logging
 from google_client.drive import GoogleDrive
 from .base_backup import BaseBackup
-
-logger = logging.getLogger(__name__)
 
 
 class S3File(io.RawIOBase):
@@ -107,8 +104,8 @@ class BackupS3(BaseBackup):
     Will skip files where the S3 ETag matches the value in the google appProperties ETag
     """
 
-    def __init__(self, access_key_id, access_key, google_credentials, backup_dir):
-        super().__init__(google_credentials, backup_dir)
+    def __init__(self, access_key_id, access_key, google_credentials, backup_dir, logger):
+        super().__init__(google_credentials, backup_dir, logger)
         self.s3 = boto3.resource('s3',  aws_access_key_id=access_key_id,  aws_secret_access_key=access_key)
         self._google_drive = None
         self.google_credentials = google_credentials
@@ -140,9 +137,9 @@ class BackupS3(BaseBackup):
             if path == '':
                 path = '/'
             if not folders.file_exists(path, filename, f.e_tag):
-                logger.info(f'Backing up {f.key}')
+                self.logger.info(f'Backing up {f.key}')
                 s3_file = S3File(self.s3.Object(bucket_name, f.key))
                 self.google_drive.create_file_stream(filename, folders.parent(path), s3_file,
                                                      body={'appProperties': {'ETag': f.e_tag}})
             else:
-                logger.info(f'found {f.key}')
+                self.logger.info(f'found {f.key}')

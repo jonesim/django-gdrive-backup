@@ -1,3 +1,4 @@
+import logging
 from tempfile import gettempdir
 
 from django.conf import settings
@@ -13,11 +14,10 @@ except ImportError:
 
 class Backup:
 
-    def __init__(self):
-        pass
+    def __init__(self, logger=None):
+        self.logger = logger if logger else logging.getLogger(__name__)
 
-    @staticmethod
-    def get_backup_db(schema=None):
+    def get_backup_db(self, schema=None):
         google_directory = getattr(settings, 'BACKUP_GDRIVE_DB', settings.BACKUP_GDRIVE_DIR + '/db')
         if schema:
             google_directory += '/' + schema
@@ -25,6 +25,7 @@ class Backup:
                         google_directory,
                         settings.DATABASES['default'],
                         getattr(settings, 'BACKUP_LOCAL_DB_DIR', gettempdir()),
+                        self.logger,
                         schema=schema)
 
     def backup_db_and_folders(self):
@@ -34,13 +35,14 @@ class Backup:
         db.prune_old_backups(settings.BACKUP_DB_RETENTION)
 
         if hasattr(settings, 'BACKUP_DIRS'):
-            b = BackupLocal(django_credentials.get_credentials('drive'), settings.BACKUP_GDRIVE_DIR)
+            b = BackupLocal(django_credentials.get_credentials('drive'), settings.BACKUP_GDRIVE_DIR, self.logger)
             for backup in settings.BACKUP_DIRS:
                 b.backup_to_drive(*backup)
 
         if hasattr(settings, 'S3_BACKUP_DIRS'):
             s3_backup = BackupS3(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY,
                                  django_credentials.get_credentials('drive'),
-                                 settings.BACKUP_GDRIVE_DIR)
+                                 settings.BACKUP_GDRIVE_DIR,
+                                 self.logger)
             for s3 in settings.S3_BACKUP_DIRS:
                 s3_backup.backup(settings.AWS_PRIVATE_STORAGE_BUCKET_NAME, *s3)

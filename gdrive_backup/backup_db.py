@@ -1,6 +1,5 @@
 import os
 import datetime
-import logging
 import subprocess
 import urllib.parse
 import requests
@@ -8,7 +7,6 @@ from .base_backup import BaseBackup
 from .prune_backups import PruneBackups
 from .compression import decompress, compress
 
-logger = logging.getLogger(__name__)
 compression = 'bz2'
 
 
@@ -30,23 +28,23 @@ class DatabaseUploadError(Exception):
 
 class BackupDb(BaseBackup):
 
-    def __init__(self, google_credentials, google_backup_dir, database, local_backup_dir, schema=None):
-        super().__init__(google_credentials, google_backup_dir)
-        self.postgres_backup = PostgresBackup(database, schema)
+    def __init__(self, google_credentials, google_backup_dir, database, local_backup_dir, logger, schema=None):
+        super().__init__(google_credentials, google_backup_dir, logger)
+        self.postgres_backup = PostgresBackup(database, self.logger, schema)
         self.local_backup_dir = local_backup_dir
 
     def backup_db_gdrive(self):
-        logger.info('Backing up database')
+        self.logger.info('Backing up database')
         if self.postgres_backup.schema:
-            logger.info(' schema ' + self.postgres_backup.schema)
+            self.logger.info(' schema ' + self.postgres_backup.schema)
         filename = f'db_ip-{get_ip_address()}-date-{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}'
         backup_filename = self.postgres_backup.backup_db(self.local_backup_dir, filename)
         local_path = os.path.join(self.local_backup_dir, backup_filename)
-        logger.info('Copying backup to Google Drive')
+        self.logger.info('Copying backup to Google Drive')
         with open(local_path, 'rb') as backup_stream:
             google_file = self.drive.create_file_stream(backup_filename, self.base_backup_dir, backup_stream)
         if self.check_upload(google_file, local_path):
-            logger.info('Deleting temporary backup file')
+            self.logger.info('Deleting temporary backup file')
             os.remove(local_path)
         else:
             raise DatabaseUploadError
@@ -76,7 +74,8 @@ class BackupDb(BaseBackup):
 
 class PostgresBackup:
 
-    def __init__(self, database, schema=None):
+    def __init__(self, database, logger, schema=None):
+        self.logger = logger
         self.schema = schema
         self.connection_string = (f'postgresql://{database["USER"]}:{urllib.parse.quote(database["PASSWORD"])}'
                                   f'@{database["HOST"]}/{database["NAME"]}')
@@ -92,7 +91,7 @@ class PostgresBackup:
     def backup_db(self, backup_local_db_dir, filename):
         if not os.path.exists(backup_local_db_dir):
             os.makedirs(backup_local_db_dir)
-        logger.info('Creating backup file ' + filename)
+        self.logger.info('Creating backup file ' + filename)
         backup_path = backup_local_db_dir + '/' + filename
         with open(backup_path, 'wb') as db_backup:
             commands = ['pg_dump', '-d', self.connection_string, '-c']

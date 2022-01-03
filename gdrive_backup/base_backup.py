@@ -5,8 +5,9 @@ from google_client.drive import GoogleDrive
 
 class BaseBackup:
 
-    def __init__(self, google_credentials, base_backup_dir):
+    def __init__(self, google_credentials, base_backup_dir, logger):
         self.drive = GoogleDrive(google_credentials)
+        self.logger = logger
         self.base_backup_dir = self.drive.find_create_folder(base_backup_dir, shared_with_me=True)
 
     def get_existing_backup_files(self, google_drive_dir, extra_query=None):
