@@ -1,0 +1,35 @@
+{% load ajax_helpers modal_tags %}
+<!doctype html>
+
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% lib_include 'ajax_helpers' 'Bootstrap' 'FontAwesome' module='ajax_helpers.includes' %}
+    {% lib_include 'datatable' module='django_datatables.includes' %}
+    {% lib_include 'Modals' module='django_modals.includes' %}
+
+    <style>
+        .header-color {
+            background-color: #00004e;
+            color: #fefefe;
+        }
+    </style>
+    {{ ajax_helpers_script }}
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg header-color navbar-dark active-bar">
+    <h4>Django Backup </h4>
+</nav>
+<div class="m-4">
+    {{ menus.buttons.render }}
+    <div class="my-2" id="storage_info">Loading Google Drive folder information</div>
+    {{ datatables.files.render }}
+    <br>
+    <br>
+    <h4>Deleted Files</h4>
+    {{ datatables.deleted_files.render }}
+</div>
+
+</body>
+</html>
