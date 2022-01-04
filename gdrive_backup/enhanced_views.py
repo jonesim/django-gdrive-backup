@@ -16,7 +16,7 @@ from gdrive_backup.backup import Backup
 
 class BackupView(PermissionRequiredMixin, AjaxHelpers, MenuMixin, DatatableView):
 
-    template_name = 'gdrive_backup.backup.html'
+    template_name = 'gdrive_backup/backup.html'
     permission_required = 'access_admin'
 
     def setup_menu(self):
