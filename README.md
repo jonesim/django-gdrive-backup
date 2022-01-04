@@ -9,6 +9,14 @@ Requires a Google service account with the Google Drive API enabled
 
 https://console.cloud.google.com/apis/credentials/serviceaccountkey
 
+**Add to gdrive_backup installed apps**
+
+settings.py
+
+    INSTALLED_APPS = [ ..
+            'gdrive_backup',
+        ]
+
 **Store service account key**
 
 By default *encrypted-credentials* is used to store the key. Create a directory off the django projects BASE_DIR called credentials and save the json key. 
@@ -31,7 +39,7 @@ With a Google Drive account create a folder and share with the email address of 
 settings.py
 
     BACKUP_GDRIVE_DIR = 'django_backup'
-    BACKUP_GDRIVE_DB = BACKUP_GDRIVE_DIR + '/db'
+
 
 **Management commands**
 
