@@ -24,6 +24,7 @@ try:
         logger = logging.getLogger(__name__)
         handler = EventLogHandler(task)
         logger.addHandler(handler)
+        return logger
 
     @shared_task(bind=True)
     def ajax_backup(self, **_kwargs):
