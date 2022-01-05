@@ -34,6 +34,12 @@ settings.py
 With a Google Drive account create a folder and share with the email address of the service account.
 
 
+**Ensure psql is available to python subprocess**
+
+For docker containers you may need to something similar to the following line in the Dockerfile dependent on the version of Postgres.
+
+    RUN apt-get -y install postgresql-client-11
+
 **Configure database backup**
 
 settings.py
@@ -53,6 +59,16 @@ urls.py
     urlpatterns = [
                     path('backup/', include('gdrive_backup.urls')),
                     ....
+
+
+An enhanced version of the management page will be shown if the following django apps are installed
+
+    'django_modals', 'django_datatables', 'django_menus', 'ajax_helpers'
+
+from the following PyPi packages
+
+    django-nested-modals, django-filtered-datatables, django-tab-menus, django-ajax-helpers
+
 
 **Configure S3 folder backups**
 
