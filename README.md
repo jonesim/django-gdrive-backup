@@ -1,3 +1,5 @@
+[![PyPI version](https://badge.fury.io/py/django-gdrive-backup.svg)](https://badge.fury.io/py/django-gdrive-backup)
+
 
 **django-gdrive-backup** 
 
