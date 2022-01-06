@@ -5,6 +5,15 @@
 
 Backs up django postgres databases, local folders and S3 folders to a Google Drive folder through a google service account.
 
+**encrypted-credentials**
+
+This package uses encrypted-credentials and the instructions there could be useful. Adding the following lines to **settings.py** will initialise the package
+
+    from encrypted_credentials.django_credentials import add_encrypted_settings
+    
+    add_encrypted_settings(globals())
+
+
 **Create service account**
 
 Requires a Google service account with the Google Drive API enabled
