@@ -58,6 +58,15 @@ class Backup:
 
             for row in cursor.fetchall():
                 schema = row[0]
+
+                # only backup folders if the schema is public
+                if schema.lower() == 'public':
+                    _include_folders = include_folders
+                    _include_s3_folders = include_s3_folders
+                else:
+                    _include_folders = False
+                    _include_s3_folders = False
+
                 self.backup_db_and_folders(schema=schema,
-                                           include_folders=include_folders,
-                                           include_s3_folders=include_s3_folders)
+                                           include_folders=_include_folders,
+                                           include_s3_folders=_include_s3_folders)
