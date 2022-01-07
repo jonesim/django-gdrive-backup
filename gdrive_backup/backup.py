@@ -28,21 +28,35 @@ class Backup:
                         self.logger,
                         schema=schema)
 
-    def backup_db_and_folders(self):
-        db = self.get_backup_db()
+    def backup_db_and_folders(self, schema=None, include_folders=True, include_s3_folders=True):
+        if schema:
+            logging.info(f'Schema {schema}')
+
+        db = self.get_backup_db(schema=schema)
         db.backup_db_gdrive()
 
         db.prune_old_backups(settings.BACKUP_DB_RETENTION)
+        if include_folders:
+            if hasattr(settings, 'BACKUP_DIRS'):
+                b = BackupLocal(django_credentials.get_credentials('drive'), settings.BACKUP_GDRIVE_DIR, self.logger)
+                for backup in settings.BACKUP_DIRS:
+                    b.backup_to_drive(*backup)
 
-        if hasattr(settings, 'BACKUP_DIRS'):
-            b = BackupLocal(django_credentials.get_credentials('drive'), settings.BACKUP_GDRIVE_DIR, self.logger)
-            for backup in settings.BACKUP_DIRS:
-                b.backup_to_drive(*backup)
+        if include_s3_folders:
+            if hasattr(settings, 'S3_BACKUP_DIRS'):
+                s3_backup = BackupS3(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY,
+                                     django_credentials.get_credentials('drive'),
+                                     settings.BACKUP_GDRIVE_DIR,
+                                     self.logger)
+                for s3 in settings.S3_BACKUP_DIRS:
+                    s3_backup.backup(settings.AWS_PRIVATE_STORAGE_BUCKET_NAME, *s3)
 
-        if hasattr(settings, 'S3_BACKUP_DIRS'):
-            s3_backup = BackupS3(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY,
-                                 django_credentials.get_credentials('drive'),
-                                 settings.BACKUP_GDRIVE_DIR,
-                                 self.logger)
-            for s3 in settings.S3_BACKUP_DIRS:
-                s3_backup.backup(settings.AWS_PRIVATE_STORAGE_BUCKET_NAME, *s3)
+    def backup_db_all_schemas_and_folders(self, include_folders=True, include_s3_folders=True):
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT schema_name FROM information_schema.schemata WHERE schema_name not like 'pg_%'")
+
+            for row in cursor.fetchall():
+                schema = row[0]
+                self.backup_db_and_folders(schema=schema,
+                                           include_folders=include_folders,
+                                           include_s3_folders=include_s3_folders)
