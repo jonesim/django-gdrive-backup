@@ -5,6 +5,7 @@ from django.conf import settings
 from encrypted_credentials import django_credentials
 from .backup_db import BackupDb
 from .backup_local_files import BackupLocal
+from django.db import connection
 try:
     from .backup_s3 import BackupS3
 except ImportError:
