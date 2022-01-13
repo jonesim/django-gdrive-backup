@@ -9,7 +9,7 @@ class Command(BaseCommand):
         parser.add_argument('--schema', type=str)
 
     def handle(self, *args, **options):
-        db = Backup.get_backup_db(schema=options['schema'])
+        db = Backup().get_backup_db(schema=options['schema'])
         if options['local_file'] is not None:
             db.postgres_backup.restore_db(options['local_file'])
         else:
