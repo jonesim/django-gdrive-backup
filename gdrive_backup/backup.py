@@ -17,7 +17,7 @@ class Backup:
     def __init__(self, logger=None):
         self.logger = logger if logger else logging.getLogger(__name__)
 
-    def get_backup_db(self, schema=None):
+    def get_backup_db(self, schema=None, table=None):
         google_directory = getattr(settings, 'BACKUP_GDRIVE_DB', settings.BACKUP_GDRIVE_DIR + '/db')
         if schema:
             google_directory += '/' + schema
@@ -26,10 +26,11 @@ class Backup:
                         settings.DATABASES['default'],
                         getattr(settings, 'BACKUP_LOCAL_DB_DIR', gettempdir()),
                         self.logger,
-                        schema=schema)
+                        schema=schema,
+                        table=table)
 
-    def backup_db_and_folders(self):
-        db = self.get_backup_db()
+    def backup_db_and_folders(self, schema=None, table=None):
+        db = self.get_backup_db(schema, table)
         db.backup_db_gdrive()
 
         db.prune_old_backups(settings.BACKUP_DB_RETENTION)
