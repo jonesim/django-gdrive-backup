@@ -27,10 +27,11 @@ try:
         return logger
 
     @shared_task(bind=True)
-    def ajax_backup(self, **_kwargs):
-        Backup(get_logger(self)).backup_db_and_folders()
+    def ajax_backup(self, schema=None, table=None, **kwargs):
+        if 'slug' in kwargs:
+            schema = kwargs['slug'].get('pk')
+        Backup(get_logger(self)).backup_db_and_folders(schema=schema, table=table)
         return {'commands': [ajax_command('message', text='Backup Complete'), ajax_command('reload')]}
-
 
     @shared_task(bind=True)
     def ajax_restore(self, *, slug, **_kwargs):
