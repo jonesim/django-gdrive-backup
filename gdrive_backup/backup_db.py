@@ -39,7 +39,6 @@ class BackupDb(BaseBackup):
         self.local_backup_dir = local_backup_dir
 
     def backup_db_gdrive(self):
-        self.logger.info('Backing up database')
         app_properties = {'ip_address': get_ip_address()}
         if self.postgres_backup.table:
             app_properties['schema'] = self.postgres_backup.schema
@@ -51,7 +50,7 @@ class BackupDb(BaseBackup):
         else:
             filename = 'db'
         filename += f'_{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}.{compression}'
-        backup_stream = NamedTemporaryFile()
+        backup_stream = NamedTemporaryFile(delete=False)
         backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
         self.logger.info('Copying backup to Google Drive')
         with open(backup_filename, 'rb') as compressed_file:
@@ -115,10 +114,13 @@ class PostgresBackup:
         with open(backup_path, 'wb') as db_backup:
             commands = ['pg_dump', '-d', self.connection_string]
             if self.table:
+                self.logger.info(f'Backing up table {self.schema}.{self.table}')
                 commands += ['-a', '-t', f'{self.schema}.{self.table}']
             elif self.schema:
+                self.logger.info(f'Backing up schema {self.schema}')
                 commands += ['-c', '-n', self.schema]
             else:
+                self.logger.info(f'Backing up database')
                 commands += ['-c']
             dump_process = subprocess.Popen(commands, stdout=db_backup)
             dump_process.wait()
