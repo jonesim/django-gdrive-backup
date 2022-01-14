@@ -14,7 +14,8 @@ def get_schemas():
             'LEFT JOIN pg_catalog.pg_namespace ON relnamespace = pg_catalog.pg_namespace.oid '
             'GROUP BY pg_catalog.pg_namespace.nspname'
         )
-        return [schema for schema in cursor.fetchall() if schema[0] not in ['pg_catalog']]
+        return [schema for schema in cursor.fetchall() if not schema[0].startswith('pg_')
+                and schema[0] not in ['information_schema']]
 
 
 def get_schema_tables(schema):
