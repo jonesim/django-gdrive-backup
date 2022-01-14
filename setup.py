@@ -20,5 +20,5 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     python_requires='>=3.6',
-    install_requires=['encrypted-credentials', 'google-client-helper'],
+    install_requires=['encrypted-credentials', 'google-client-helper', 'requests'],
 )
