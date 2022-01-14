@@ -3,3 +3,4 @@
 /build/
 /dist/
 /django_gdrive_backup.egg-info/
+/django_examples/django_examples/PRIVATE_KEY.env
