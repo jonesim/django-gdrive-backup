@@ -25,10 +25,9 @@ try:
     from ajax_helpers.utils import ajax_command
 
     @shared_task(bind=True)
-    def ajax_backup(self, schema=None, table=None, **kwargs):
-        if 'slug' in kwargs:
-            schema = kwargs['slug'].get('pk')
-        Backup(StateLogger(self)).backup_db_and_folders(schema=schema, table=table)
+    def ajax_backup(self, **kwargs):
+        task_kwargs = kwargs['slug'] if 'slug' in kwargs else kwargs
+        Backup(StateLogger(self)).backup_db_and_folders(**task_kwargs)
         return {'commands': [ajax_command('message', text='Backup Complete'), ajax_command('reload')]}
 
     @shared_task(bind=True)
