@@ -1,0 +1,20 @@
+Django==3.2.7
+django-crispy-forms==1.12.0
+# django-ajax-helpers==0.0.16
+django-filtered-datatables @ git+git://github.com/jonesim/django-datatables@dc267b4b1aba0d311f10c9c64e8e506185a7ed12
+django-nested-modals @ git+git://github.com/jonesim/django-modals@57b3f6299b489e05e216cda033728cd6592d9af2
+#django-tab-menus==0.0.13
+django-show-source-code==0.0.7
+django-tab-menus @ git+git://github.com/jonesim/django-menus@11f46eead9dec3c99724d9d5df87ce7eb0bee730
+django-ajax-helpers @ git+git://github.com/jonesim/ajax-helpers@63bf22470deba94a61892dbbc2408ca658479d15
+datatable-examples @ git+git://github.com/jonesim/django-datatables@e0535792137acef57160447e235fc0c45c8500b3#subdirectory=django
+celery==4.4.0
+redis==3.3.11
+ajax-examples @ git+git://github.com/jonesim/ajax-helpers@f8a1f64926c2b82c4adc8cc3fa9976cb3375a7b6#subdirectory=django_examples
+encrypted_credentials
+google-client-helper
+django-modal-2fa @ git+git://github.com/jonesim/django-2fa@9a84aefbacb21f642d31387fd85d1551a30ac478
+openpyxl==3.0.9
+psycopg2==2.9.3
+flower
+requests

@@ -1,0 +1,13 @@
+Metadata-Version: 1.2
+Name: modal-examples
+Version: 0.0.1
+Summary: Modal examples
+Home-page: UNKNOWN
+Author: Ian Jones
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.6

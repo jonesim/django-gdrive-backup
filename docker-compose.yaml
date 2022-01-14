@@ -1,0 +1,54 @@
+version: "3"
+services:
+
+ django: &django
+  build:
+   context: ./
+  volumes:
+   - shared_temp:/tmp
+   - ./media/:/media
+   - ./django_examples/:/app
+   - ./gdrive_backup/:/backup/gdrive_backup
+   - /var/run/docker.sock:/var/run/docker.sock
+  command: bash -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8011"
+  environment:
+   - PYTHONPATH=/backup
+  env_file:
+    - postgres.env
+  ports:
+   - 8011:8011
+
+ redis:
+   image: redis:5.0.7-alpine
+
+ celery:
+   <<: *django
+   image: modal_celeryworker
+   command: celery -A django_examples worker -l info
+   labels:
+     - "none"
+   ports:
+    - 80
+
+
+ pg_database:
+  image: postgres:11.6
+  #volumes:
+  #  - postgres_data:/var/lib/postgresql/data
+  env_file:
+    - postgres.env
+  environment:
+    - ALLOW_IP_RANGE=0.0.0.0/0
+  ports:
+    - "5433:5432"
+
+ flower:
+  <<: *django
+  image: db_backup_flower
+  command: celery -A django_examples flower
+  ports:
+    - 5555:5555
+
+volumes:
+  #postgres_data: {}
+  shared_temp: {}
