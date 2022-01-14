@@ -7,7 +7,7 @@ from django.contrib.auth.mixins import PermissionRequiredMixin
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
 from django_datatables.helpers import row_button, overwrite_cell
-from django_menus.menu import MenuMixin
+from django_menus.menu import MenuMixin, MenuItem
 from django_menus.modal_item import ModalMenuItem
 from django_modals.datatables import ModalLink
 from openpyxl import Workbook
@@ -38,10 +38,10 @@ class TableBackup(AjaxTaskMixin, AjaxHelpers):
         self.set_cell_commands(table_id, row_no, '<div class="spinner-border spinner-border-sm"></div> Backing up')
         if table_id == 'schema_tables':
             # noinspection PyUnresolvedReferences
-            task_kwargs = dict(schema=self.schema, table=row_no[1:], user_id=self.request.user.id)
+            task_kwargs = dict(schema=self.schema, table=row_no[1:])
         else:
             # noinspection PyUnresolvedReferences
-            task_kwargs = dict(schema=row_no[1:], user_id=self.request.user.id)
+            task_kwargs = dict(schema=row_no[1:])
         return self.start_task('backup', task_kwargs=task_kwargs, result_kwargs=dict(table_id=table_id, row_no=row_no))
 
     def task_state_success(self, *, table_id, row_no, **_kwargs):
@@ -63,12 +63,17 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
                 ('gdrive_backup:schema_info', self.schema, {'url_args': [self.schema]}),
             )
             self.menus['buttons'].add_items(
-                ModalMenuItem('gdrive_backup:confirm_backup', f'BACKUP {self.schema}', modal_slug_args='schema'),
+                ModalMenuItem('gdrive_backup:confirm_backup', f'BACKUP {self.schema}',
+                              modal_slug_args=['schema-', self.schema]),
                 ('gdrive_backup:schema_tables', 'View Tables', {'url_args': [self.schema]}),
             )
         else:
             self.menus['buttons'].add_items(
-                ModalMenuItem('gdrive_backup:confirm_backup', 'BACKUP Now'),
+                ModalMenuItem('gdrive_backup:confirm_backup', 'Backup database'),
+                ModalMenuItem('gdrive_backup:confirm_backup', 'Backup All Schemas', modal_slug_args='all_schemas-True',
+                              visible=len(self.schemas) > 1),
+                MenuItem('gdrive_backup:schema_info', f'View {self.schemas[0][0]}', url_args=[self.schemas[0][0]],
+                         visible=len(self.schemas) == 1),
                 ModalMenuItem('gdrive_backup:confirm_empty_trash', 'Empty Trash', css_classes='btn btn-warning'),
                 ModalMenuItem('gdrive_backup:confirm_drop_schema', 'Drop Public Schema', css_classes='btn btn-danger',
                               visible=getattr(settings, 'DEBUG', False)),
@@ -76,15 +81,14 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
 
     def dispatch(self, request, *args, schema=None, **kwargs):
         self.schema = schema
+        self.schemas = get_schemas()
         return super().dispatch(request, *args, **kwargs)
 
     def add_tables(self):
         self.add_table('files')
         self.add_table('deleted_files')
-        if not self.schema:
-            self.schemas = get_schemas()
-            if len(self.schemas) > 1:
-                self.add_table('schemas')
+        if not self.schema and len(self.schemas) > 1:
+            self.add_table('schemas')
 
     @staticmethod
     def setup_files(table):
