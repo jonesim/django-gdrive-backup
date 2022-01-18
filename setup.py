@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="django-gdrive-backup",
-    version="0.0.7",
+    version="0.0.8",
     author="Ian Jones",
     description=("Backs up django postgres databases, local folders and S3 folders to a Google Drive folder "
                  "through a google service account."),
