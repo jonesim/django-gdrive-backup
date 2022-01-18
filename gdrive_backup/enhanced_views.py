@@ -7,8 +7,7 @@ from django.contrib.auth.mixins import PermissionRequiredMixin
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
 from django_datatables.helpers import row_button, overwrite_cell
-from django_menus.menu import MenuMixin, MenuItem
-from django_menus.modal_item import ModalMenuItem
+from django_menus.menu import MenuMixin
 from django_modals.datatables import ModalLink
 from openpyxl import Workbook
 
@@ -63,20 +62,19 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
                 ('gdrive_backup:schema_info', self.schema, {'url_args': [self.schema]}),
             )
             self.menus['buttons'].add_items(
-                ModalMenuItem('gdrive_backup:confirm_backup', f'BACKUP {self.schema}',
-                              modal_slug_args=['schema-', self.schema]),
+                (f'gdrive_backup:confirm_backup,schema-{self.schema}', f'BACKUP {self.schema}'),
                 ('gdrive_backup:schema_tables', 'View Tables', {'url_args': [self.schema]}),
             )
         else:
             self.menus['buttons'].add_items(
-                ModalMenuItem('gdrive_backup:confirm_backup', 'Backup database'),
-                ModalMenuItem('gdrive_backup:confirm_backup', 'Backup All Schemas', modal_slug_args='all_schemas-True',
-                              visible=len(self.schemas) > 1),
-                MenuItem('gdrive_backup:schema_info', f'View {self.schemas[0][0]}', url_args=[self.schemas[0][0]],
-                         visible=len(self.schemas) == 1),
-                ModalMenuItem('gdrive_backup:confirm_empty_trash', 'Empty Trash', css_classes='btn btn-warning'),
-                ModalMenuItem('gdrive_backup:confirm_drop_schema', 'Drop Public Schema', css_classes='btn btn-danger',
-                              visible=getattr(settings, 'DEBUG', False)),
+                ('gdrive_backup:confirm_backup,-', 'Backup database'),
+                ('gdrive_backup:confirm_backup,all_schemas-True', 'Backup All Schemas',
+                 {'visible': len(self.schemas) > 1}),
+                (f'gdrive_backup:schema_info,{self.schemas[0][0]}', f'View {self.schemas[0][0]}',
+                 {'visible': len(self.schemas) == 1}),
+                ('gdrive_backup:confirm_empty_trash', 'Empty Trash', {'css_classes': 'btn btn-warning'}),
+                ('gdrive_backup:confirm_drop_schema,-', 'Drop Public Schema',
+                 {'css_classes': 'btn btn-danger', 'visible': getattr(settings, 'DEBUG', False)}),
             )
 
     def dispatch(self, request, *args, schema=None, **kwargs):
