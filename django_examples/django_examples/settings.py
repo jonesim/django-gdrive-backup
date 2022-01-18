@@ -46,8 +46,6 @@ INSTALLED_APPS = [
     'ajax_helpers',
     'django_menus',
     'show_src_code',
-    'datatable_examples',
-    'ajax_examples',
     'gdrive_backup',
     *modal_2fa_apps,
 ]
