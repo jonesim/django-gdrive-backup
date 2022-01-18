@@ -20,8 +20,11 @@ def get_schemas():
 
 def get_schema_tables(schema):
     with connection.cursor() as cursor:
-        cursor.execute(f"SELECT table_name, pg_relation_size(table_schema||'.'||table_name)"
-                       f"from information_schema.tables where table_schema='{schema}'")
+        cursor.execute(
+            f" SELECT relname , pg_relation_size(relfilenode), reltuples FROM pg_catalog.pg_class "
+            f"LEFT JOIN pg_catalog.pg_namespace ON relnamespace = pg_catalog.pg_namespace.oid "
+            f"WHERE pg_catalog.pg_namespace.nspname = 'public' AND relkind='r' "
+        )
         return cursor.fetchall()
 
 
@@ -34,7 +37,7 @@ def get_table_column_names(schema, table_name):
 
 def get_table_data(schema, table_name):
     with connection.cursor() as cursor:
-        cursor.execute(f"SELECT * from {schema}.{table_name}")
+        cursor.execute(f'SELECT * from {schema}."{table_name}"')
         return cursor.fetchall()
 
 

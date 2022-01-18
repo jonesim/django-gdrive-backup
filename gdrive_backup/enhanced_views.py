@@ -1,4 +1,5 @@
 import base64
+import datetime
 from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
@@ -173,6 +174,10 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
         sheet = workbook.active
         sheet.append(get_table_column_names(self.kwargs['schema'], table_name=kwargs['row_no'][1:]))
         for r in get_table_data(self.kwargs['schema'], table_name=kwargs['row_no'][1:]):
+            r = list(r)
+            for c in range(len(r)):
+                if isinstance(r[c], datetime.datetime):
+                    r[c] = r[c].replace(tzinfo=None)
             sheet.append(r)
         output = BytesIO()
         workbook.save(output)
@@ -183,14 +188,15 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
 
     def setup_schema_tables(self, table):
         table.add_columns(
-            'table', 'size',
+            'table', 'size', ('rows', {'title': 'No. Rows (Approx)'}),
             ColumnBase(column_name='Download',
                        render=[row_button('download_xls', '<i class="far fa-file-excel"></i>',
                                           button_classes='btn btn-outline-secondary btn-sm', )]),
             ColumnBase(column_name='Backup',
                        render=[row_button('backup_schema', 'Backup', button_classes='btn btn-success btn-sm', )])
         )
-        table.table_data = [{'table': s[0], 'size': s[1]} for s in get_schema_tables(self.kwargs['schema'])]
+        table.table_data = [{'table': s[0], 'size': s[1], 'rows': s[2]}
+                            for s in get_schema_tables(self.kwargs['schema'])]
         table.table_options['column_id'] = 0
 
     def get_table_query(self, table, **kwargs):
