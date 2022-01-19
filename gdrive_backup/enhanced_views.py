@@ -78,6 +78,7 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
                  {'css_classes': 'btn btn-danger', 'visible': getattr(settings, 'DEBUG', False)}),
             )
 
+    # noinspection PyAttributeOutsideInit
     def dispatch(self, request, *args, schema=None, **kwargs):
         self.schema = schema
         self.schemas = get_schemas()
@@ -94,6 +95,8 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
                           DateTimeColumn(title='Backup Date', field='createdTime'),
                           restore_table_button('Restore DB'))
+        table.sort('-createdTime')
+        table.table_options['stateSave'] = False
 
     @staticmethod
     def setup_deleted_files(table):
@@ -101,6 +104,8 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
                           DatatableColumn(column_name='Undelete', render=[row_button(
                               'undelete', 'Undelete', button_classes='btn btn-secondary btn-sm'
                           )]))
+        table.sort('-createdTime')
+        table.table_options['stateSave'] = False
 
     def row_undelete(self, row_no, **_kwargs):
         db = Backup().get_backup_db()
@@ -119,6 +124,8 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
         )
         table.table_data = [{'schema': s[0], 'size': s[1]} for s in self.schemas]
         table.table_options['column_id'] = 0
+        table.sort('schema')
+        table.table_options['stateSave'] = False
 
     def get_context_data(self, **kwargs):
         self.add_page_command('ajax_post', data={'ajax': 'read_storage_info'})
@@ -168,17 +175,15 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
                           DateTimeColumn(title='Backup Date', field='createdTime'),
                           restore_table_button('Restore Table'))
+        table.sort('-createdTime')
+        table.table_options['stateSave'] = False
 
     def row_download_xls(self,  **kwargs):
         workbook = Workbook()
         sheet = workbook.active
         sheet.append(get_table_column_names(self.kwargs['schema'], table_name=kwargs['row_no'][1:]))
         for r in get_table_data(self.kwargs['schema'], table_name=kwargs['row_no'][1:]):
-            r = list(r)
-            for c in range(len(r)):
-                if isinstance(r[c], datetime.datetime):
-                    r[c] = r[c].replace(tzinfo=None)
-            sheet.append(r)
+            sheet.append([c.replace(tzinfo=None) if isinstance(c, datetime.datetime) else c for c in r])
         output = BytesIO()
         workbook.save(output)
         output.seek(0)
@@ -198,6 +203,8 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
         table.table_data = [{'table': s[0], 'size': s[1], 'rows': s[2]}
                             for s in get_schema_tables(self.kwargs['schema'])]
         table.table_options['column_id'] = 0
+        table.sort('table')
+        table.table_options['stateSave'] = False
 
     def get_table_query(self, table, **kwargs):
         files = Backup().get_backup_db(schema=self.kwargs.get('schema')).get_db_backup_files()
