@@ -11,6 +11,11 @@ def backup():
     Backup().backup_db_and_folders()
 
 
+@shared_task
+def backup_all_schemas():
+    Backup().backup_db_and_folders(all_schemas=True)
+
+
 class StateLogger:
 
     def __init__(self, task):
