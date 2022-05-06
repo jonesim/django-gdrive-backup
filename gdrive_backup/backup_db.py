@@ -58,6 +58,7 @@ class BackupDb(BaseBackup):
                                                         body={'appProperties': app_properties})
         if not self.check_upload(google_file, backup_filename):
             raise DatabaseUploadError
+        os.remove(backup_filename)
 
     def restore_gdrive_db(self, file_id=None, file_name=None):
         file_info = self.drive.get_file(file_id=file_id)
