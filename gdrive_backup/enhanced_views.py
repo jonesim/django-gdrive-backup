@@ -37,8 +37,12 @@ class TableBackup(AjaxTaskMixin, AjaxHelpers):
     def row_backup_schema(self, *, row_no, table_id, **_kwargs):
         self.set_cell_commands(table_id, row_no, '<div class="spinner-border spinner-border-sm"></div> Backing up')
         if table_id == 'schema_tables':
-            # noinspection PyUnresolvedReferences
-            task_kwargs = dict(schema=self.schema, table=row_no[1:])
+            if hasattr(self, 'schema'):
+                # noinspection PyUnresolvedReferences
+                task_kwargs = dict(schema=self.schema, table=row_no[1:])
+            else:
+                # noinspection PyUnresolvedReferences
+                task_kwargs = dict(schema=self.kwargs['schema'], table=row_no[1:])
         else:
             # noinspection PyUnresolvedReferences
             task_kwargs = dict(schema=row_no[1:])
