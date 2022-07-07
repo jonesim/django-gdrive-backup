@@ -16,6 +16,12 @@ def backup_all_schemas():
     Backup().backup_db_and_folders(all_schemas=True)
 
 
+@shared_task
+def empty_trash():
+    db = Backup().get_backup_db()
+    db.drive.service.files().emptyTrash().execute()
+
+
 class StateLogger:
 
     def __init__(self, task):
