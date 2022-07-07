@@ -5,6 +5,7 @@ from django.db import connection
 from django_modals.helper import modal_button, ajax_modal_redirect, modal_button_method
 from django_modals.modals import Modal
 from django_modals.task_modals import TaskModal
+from ajax_helpers.utils import is_ajax
 
 from gdrive_backup.backup import Backup
 
@@ -49,7 +50,7 @@ class SuperUserTaskModal(SuperUserMixin, TaskModal):
     refresh_ms = 500
 
     def dispatch(self, request, *args, **kwargs):
-        if request.is_ajax() and request.content_type == 'application/json':
+        if is_ajax(request) and request.content_type == 'application/json':
             response = json.loads(request.body)
             if response.get('ajax') == 'check_result':
                 self.test_func = lambda: True
