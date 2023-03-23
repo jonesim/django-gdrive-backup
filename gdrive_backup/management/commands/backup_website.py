@@ -36,6 +36,9 @@ class Command(BaseCommand):
                             action='store_true',
                             default=False)
 
+        parser.add_argument('-sub_folder',
+                            type=str)
+
     def handle(self, *args, **options):
         folder_kwargs = {}
         if options['db_only']:
@@ -47,5 +50,8 @@ class Command(BaseCommand):
         elif options['folders_only']:
             folder_kwargs['include_db'] = False
             folder_kwargs['include_s3_folders'] = False
-        Backup(logger=Logger()).backup_db_and_folders(all_schemas=options['all_schemas'], schema=options['schema'],
-                                                      table=options['table'], **folder_kwargs)
+        Backup(logger=Logger()).backup_db_and_folders(all_schemas=options['all_schemas'],
+                                                      schema=options['schema'],
+                                                      table=options['table'],
+                                                      sub_folder=options['sub_folder'],
+                                                      **folder_kwargs)

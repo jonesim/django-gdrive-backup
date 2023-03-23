@@ -19,9 +19,11 @@ class Backup:
     def __init__(self, logger=None):
         self.logger = logger if logger else logging.getLogger(__name__)
 
-    def get_backup_db(self, schema=None, table=None):
+    def get_backup_db(self, schema=None, table=None, sub_folder=None):
         google_directory = getattr(settings, 'BACKUP_GDRIVE_DB', settings.BACKUP_GDRIVE_DIR + '/db')
-        if schema:
+        if sub_folder:
+            google_directory += '/' + sub_folder
+        elif schema:
             google_directory += '/' + schema
         return BackupDb(django_credentials.get_credentials('drive'),
                         google_directory,
@@ -32,11 +34,11 @@ class Backup:
                         table=table)
 
     def backup_db_and_folders(self, schema=None, table=None, include_db=True, all_schemas=False,
-                              include_folders=True, include_s3_folders=True):
+                              include_folders=True, include_s3_folders=True, sub_folder=None):
         if include_db:
             schemas = [s[0] for s in get_schemas()] if all_schemas else [schema]
             for s in schemas:
-                db = self.get_backup_db(s, table)
+                db = self.get_backup_db(s, table, sub_folder)
                 db.backup_db_gdrive()
                 db.prune_old_backups(settings.BACKUP_DB_RETENTION)
 
