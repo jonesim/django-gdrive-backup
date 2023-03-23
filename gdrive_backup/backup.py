@@ -40,7 +40,8 @@ class Backup:
             for s in schemas:
                 db = self.get_backup_db(s, table, sub_folder)
                 db.backup_db_gdrive()
-                db.prune_old_backups(settings.BACKUP_DB_RETENTION)
+                if not sub_folder:
+                    db.prune_old_backups(settings.BACKUP_DB_RETENTION)
 
         if include_folders and hasattr(settings, 'BACKUP_DIRS'):
             b = BackupLocal(django_credentials.get_credentials('drive'), settings.BACKUP_GDRIVE_DIR, self.logger)
