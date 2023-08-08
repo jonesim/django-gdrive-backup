@@ -1,5 +1,6 @@
 import base64
 import datetime
+import json
 from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
@@ -10,6 +11,8 @@ from django_datatables.datatables import DatatableView
 from django_datatables.helpers import row_button, overwrite_cell
 from django_menus.menu import MenuMixin
 from django_modals.datatables import ModalLink
+from django_modals.decorators import ConfirmAjaxMethod
+from django_modals.helper import reverse_modal
 from openpyxl import Workbook
 
 from gdrive_backup.backup import Backup
@@ -98,9 +101,19 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
     def setup_files(table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
                           DateTimeColumn(title='Backup Date', field='createdTime'),
+                          DatatableColumn(column_name='drop_restore',
+                                          render=[row_button('drop_restore', 'Drop Restore',
+                                                             button_classes='btn btn-warning btn-sm',)]),
                           restore_table_button('Restore DB'))
         table.sort('-createdTime')
         table.table_options['stateSave'] = False
+
+    @ConfirmAjaxMethod(message='This will overwrite the current database and data could be lost')
+    def row_drop_restore(self, row_data, **kwargs):
+        table_row = json.loads(row_data)
+        return self.command_response('show_modal',
+                                     modal = reverse_modal('gdrive_backup:restore_db'
+                                                           ,base64={'pk': table_row[0], 'drop_schema': 'public'}))
 
     @staticmethod
     def setup_deleted_files(table):

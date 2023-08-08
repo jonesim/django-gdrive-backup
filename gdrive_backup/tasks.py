@@ -1,6 +1,8 @@
 import logging
 
 from celery import shared_task
+from django.db import connection
+
 from .backup import Backup
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,10 @@ try:
 
     @shared_task(bind=True)
     def ajax_restore(self, *, slug, **_kwargs):
+        if slug.get('drop_schema'):
+            with connection.cursor() as cursor:
+                cursor.execute(f'DROP SCHEMA {slug.get("drop_schema")} CASCADE')
+                cursor.execute(f'CREATE SCHEMA {slug.get("drop_schema")}')
         Backup(StateLogger(self)).get_backup_db().restore_gdrive_db(file_id=slug['pk'])
         return {'commands': [ajax_command('message', text='Restore Complete'), ajax_command('reload')]}
 

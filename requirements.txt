@@ -3,7 +3,7 @@ django-crispy-forms==1.12.0
 django-ajax-helpers==0.0.20
 django-filtered-datatables==0.0.20
 django-tab-menus==0.0.14
-django-nested-modals==0.0.18
+django-nested-modals==0.0.23
 django-show-source-code==0.0.7
 django-modal-2fa==0.0.2
 celery==4.4.0
