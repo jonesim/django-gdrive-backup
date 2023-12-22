@@ -6,3 +6,5 @@
 /django_examples/django_examples/PRIVATE_KEY.env
 /django_examples/django_examples/PRIVATE_settings.py
 /django_examples/.credentials/cred.json
+*.pyc
+.DS_Store
