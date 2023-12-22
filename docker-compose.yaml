@@ -17,6 +17,8 @@ services:
     - postgres.env
   ports:
    - 8011:8011
+  depends_on:
+   - pg_database
 
  redis:
    image: redis:5.0.7-alpine
