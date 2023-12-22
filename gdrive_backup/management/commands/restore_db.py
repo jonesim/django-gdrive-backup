@@ -18,4 +18,4 @@ class Command(BaseCommand):
             confirm = input('Do you want to restore which will overwrite current database (yes/no)? ')
             if confirm.lower() == 'yes':
                 print('Restoring..')
-                db.restore_gdrive_db(file_id=latest_db['id'])
+                db.restore_cloud_storage_db(file_id=latest_db['id'])

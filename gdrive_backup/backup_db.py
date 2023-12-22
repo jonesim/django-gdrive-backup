@@ -1,10 +1,12 @@
 import datetime
 import os
 import subprocess
+import time
 import urllib.parse
 from tempfile import NamedTemporaryFile
 
 import requests
+
 
 from .base_backup import BaseBackup
 from .compression import decompress, compress
@@ -32,45 +34,63 @@ class DatabaseUploadError(Exception):
 
 class BackupDb(BaseBackup):
 
-    def __init__(self, google_credentials, google_backup_dir, database, local_backup_dir, logger, schema=None,
+    def __init__(self, base_backup_dir, database, local_backup_dir, logger, schema=None,
                  table=None):
-        super().__init__(google_credentials, google_backup_dir, logger)
+        super().__init__(base_backup_dir, logger)
         self.postgres_backup = PostgresBackup(database, self.logger, schema, table)
         self.local_backup_dir = local_backup_dir
 
-    def backup_db_gdrive(self):
-        app_properties = {'ip_address': get_ip_address()}
+    def backup_db_and_upload(self):
         if self.postgres_backup.table:
-            app_properties['schema'] = self.postgres_backup.schema
-            app_properties['table'] = self.postgres_backup.table
             filename = f'table_{self.postgres_backup.table}'
         elif self.postgres_backup.schema:
-            app_properties['schema'] = self.postgres_backup.schema
             filename = f'schema_{self.postgres_backup.schema}'
         else:
             filename = 'db'
         filename += f'_{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}.{compression}'
         backup_stream = NamedTemporaryFile(delete=False)
         backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
-        self.logger.info('Copying backup to Google Drive')
-        with open(backup_filename, 'rb') as compressed_file:
-            google_file = self.drive.create_file_stream(filename, self.base_backup_dir, compressed_file,
-                                                        body={'appProperties': app_properties})
-        if not self.check_upload(google_file, backup_filename):
+        self.logger.info('uploading backup')
+        self.upload_file(file_path=backup_filename,
+                         upload_filename=filename)
+
+        if not self.check_upload(storage_file_id=filename, local_file_path=backup_filename):
             raise DatabaseUploadError
         os.remove(backup_filename)
 
-    def restore_gdrive_db(self, file_id=None, file_name=None):
-        file_info = self.drive.get_file(file_id=file_id)
-        file_name = self.drive.get_file_contents(file_id=file_id, file_name=file_name, folder=self.base_backup_dir,
-                                                 local_folder=self.local_backup_dir)
-        if file_info.get('appProperties', {}).get('table'):
-            delete_table(file_info["appProperties"]["schema"], file_info["appProperties"]["table"])
-        self.postgres_backup.restore_db(os.path.join(self.local_backup_dir, file_name))
+    def restore_cloud_storage_db(self, file_id=None, file_name=None):
+        assert False
+        # self.download_file(file_id, )
+        # file_name = self.get_file_contents(file_path=file_name, local_folder=self.base_backup_dir)
+        # if file_info.get('appProperties', {}).get('table'):
+        #     delete_table(file_info["appProperties"]["schema"], file_info["appProperties"]["table"])
+        # self.postgres_backup.restore_db(os.path.join(self.local_backup_dir, file_name))
 
-    def get_db_backup_files(self, trashed=False, extra_q=''):
-        return self.drive.file_list(q=f"{self.drive.build_q(trashed=trashed, folder=self.base_backup_dir)}"
-                                    f" and mimeType contains 'application/x-'{extra_q}", orderBy='createdTime desc')
+    def get_db_backup_files(self):
+        storages = self.get_storages()
+        _, file_names = storages.listdir(self.base_backup_dir)
+
+        # List of dictionaries with file name and creation time
+        files_with_details = []
+
+        for file_name in file_names:
+            file_path = os.path.join(self.base_backup_dir, file_name)
+            try:
+                # Getting creation time
+                creation_time = os.path.getctime(file_path)
+                # Getting file size
+                file_size = os.path.getsize(file_path)
+                # Convert creation time to a readable format if necessary, e.g., time.ctime(creation_time)
+                files_with_details.append({
+                    'file_name': file_name,
+                    'created_time': time.ctime(creation_time),
+                    'file_size': file_size  # Size in bytes
+                })
+            except OSError:
+                # Handle error if file is not accessible
+                pass
+
+        return files_with_details
 
     def get_latest_db_backup(self):
         files = self.get_db_backup_files()
@@ -78,13 +98,14 @@ class BackupDb(BaseBackup):
             return files[0]
 
     def prune_old_backups(self, recipe):
-        backups = self.get_db_backup_files(extra_q=(f" and appProperties has "
-                                                    f"{{ key='ip_address' and value='{get_ip_address()}'}}"))
-        backup_dict = {b['createdTime']: b for b in backups}
+        backup_dict = self.get_db_backup_files()
+
+        backup_dict = {b['createdTime']: b['file_name'] for b in backup_dict}
+
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
         for k in removal:
-            self.drive.service.files().update(fileId=removal[k]['id'], body={'trashed': True}).execute()
+            self.trash_file(k)
 
 
 class PostgresBackup:

@@ -5,14 +5,8 @@ from django.conf import settings
 from encrypted_credentials import django_credentials
 from .backup_db import BackupDb
 from .backup_local_files import BackupLocal
+from .backup_s3 import BackupS3
 from .sql_functions import get_schemas
-
-try:
-    from .backup_s3 import BackupS3
-except ImportError:
-    # Allow for not using S3 and not installing boto3
-    BackupS3 = None
-
 
 class Backup:
 
@@ -20,13 +14,12 @@ class Backup:
         self.logger = logger if logger else logging.getLogger(__name__)
 
     def get_backup_db(self, schema=None, table=None, sub_folder=None):
-        google_directory = getattr(settings, 'BACKUP_GDRIVE_DB', settings.BACKUP_GDRIVE_DIR + '/db')
+        cloud_storage_directory = getattr(settings, 'BACKUP_GDRIVE_DB', settings.BACKUP_STORAGE_DIR + '/db')
         if sub_folder:
-            google_directory += '/' + sub_folder
+            cloud_storage_directory += '/' + sub_folder
         elif schema:
-            google_directory += '/' + schema
-        return BackupDb(django_credentials.get_credentials('drive'),
-                        google_directory,
+            cloud_storage_directory += '/' + schema
+        return BackupDb(cloud_storage_directory,
                         settings.DATABASES['default'],
                         getattr(settings, 'BACKUP_LOCAL_DB_DIR', gettempdir()),
                         self.logger,
@@ -39,19 +32,18 @@ class Backup:
             schemas = [s[0] for s in get_schemas()] if all_schemas else [schema]
             for s in schemas:
                 db = self.get_backup_db(s, table, sub_folder)
-                db.backup_db_gdrive()
+                db.backup_db_and_upload()
                 if not sub_folder:
                     db.prune_old_backups(settings.BACKUP_DB_RETENTION)
 
         if include_folders and hasattr(settings, 'BACKUP_DIRS'):
-            b = BackupLocal(django_credentials.get_credentials('drive'), settings.BACKUP_GDRIVE_DIR, self.logger)
+            b = BackupLocal(settings.BACKUP_STORAGE_DIR, self.logger)
             for backup in settings.BACKUP_DIRS:
-                b.backup_to_drive(*backup)
+                b.backup_to_storages(*backup)
 
         if include_s3_folders and hasattr(settings, 'S3_BACKUP_DIRS'):
             s3_backup = BackupS3(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY,
-                                 django_credentials.get_credentials('drive'),
-                                 settings.BACKUP_GDRIVE_DIR,
+                                 settings.BACKUP_STORAGE_DIR,
                                  self.logger)
             for s3 in settings.S3_BACKUP_DIRS:
                 s3_backup.backup(settings.AWS_PRIVATE_STORAGE_BUCKET_NAME, *s3)

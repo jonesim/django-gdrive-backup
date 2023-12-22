@@ -145,30 +145,14 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
         table.table_options['stateSave'] = False
 
     def get_context_data(self, **kwargs):
-        self.add_page_command('ajax_post', data={'ajax': 'read_storage_info'})
         context = super().get_context_data(**kwargs)
         context['schema'] = self.schema
         return context
 
-    def ajax_read_storage_info(self, **_kwargs):
-        db = Backup().get_backup_db(schema=self.schema)
-        meta = db.base_backup_dir
-        folder_button = '<a target="_blank" href="{}">{}</a>'.format(meta['webViewLink'], meta['name'])
-        about = db.drive.service.about().get(fields='*').execute()
-        return self.command_response(
-            'html',
-            selector='#storage_info',
-            html="Google Drive Folder {}<br>{:.1f} GB Used of {:.1f} GB".format(
-                folder_button,
-                int(about['storageQuota']['usage']) / (1024*1024*1024),
-                int(about['storageQuota']['limit']) / (1024*1024*1024)
-            )
-        )
-
     def get_table_query(self, table, **kwargs):
-        trashed = {} if table.table_id == 'files' else {'trashed': True}
-        files = Backup().get_backup_db(schema=self.schema).get_db_backup_files(**trashed)
-        return [dict(**f, **f.get('appProperties', {})) for f in files if not f.get('appProperties', {}).get('table')]
+        # trashed = {} if table.table_id == 'files' else {'trashed': True}
+        return Backup().get_backup_db(schema=self.schema).get_db_backup_files()
+        # return [dict(**f, **f.get('appProperties', {})) for f in files if not f.get('appProperties', {}).get('table')]
 
 
 class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxHelpers, MenuMixin, DatatableView):

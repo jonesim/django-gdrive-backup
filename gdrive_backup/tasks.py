@@ -49,7 +49,7 @@ try:
             with connection.cursor() as cursor:
                 cursor.execute(f'DROP SCHEMA {slug.get("drop_schema")} CASCADE')
                 cursor.execute(f'CREATE SCHEMA {slug.get("drop_schema")}')
-        Backup(StateLogger(self)).get_backup_db().restore_gdrive_db(file_id=slug['pk'])
+        Backup(StateLogger(self)).get_backup_db().restore_cloud_storage_db(file_id=slug['pk'])
         return {'commands': [ajax_command('message', text='Restore Complete'), ajax_command('reload')]}
 
 except ModuleNotFoundError:
