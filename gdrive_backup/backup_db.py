@@ -101,12 +101,13 @@ class BackupDb(BaseBackup):
 
     def prune_old_backups(self, recipe):
         backup_dict = self.get_db_backup_files()
-
         backup_dict = {b['created_time']: b['name'] for b in backup_dict}
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
-        for k in removal:
-            self.trash_file(removal[k]['id'])
+
+        for file in removal.values():
+            delete_file = os.path.join(self.base_backup_dir, file)
+            self.trash_file(delete_file)
 
 
 class PostgresBackup:

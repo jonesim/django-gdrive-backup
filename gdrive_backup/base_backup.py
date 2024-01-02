@@ -126,12 +126,10 @@ class BaseBackup:
                 file_content = storage_file.read()
             return BytesIO(file_content)
 
-    def trash_file(self, file_id):
+    def trash_file(self, file_path):
         storage = self.get_storages()
-        if storage.exists(file_id):
-            storage.delete(file_id)
-
-
+        if storage.exists(file_path):
+            storage.delete(file_path)
 
     def get_storages(self):
         if self._storage is None:
