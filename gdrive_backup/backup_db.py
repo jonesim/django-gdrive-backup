@@ -1,7 +1,6 @@
 import datetime
 import os
 import subprocess
-import time
 import urllib.parse
 from tempfile import NamedTemporaryFile
 
@@ -11,7 +10,6 @@ import requests
 from .base_backup import BaseBackup
 from .compression import decompress, compress
 from .prune_backups import PruneBackups
-from .sql_functions import delete_table
 
 compression = 'bz2'
 
@@ -50,11 +48,13 @@ class BackupDb(BaseBackup):
         filename += f'_{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}.{compression}'
         backup_stream = NamedTemporaryFile(delete=False)
         backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
-        self.logger.info('uploading backup')
-        self.upload_file(file_path=backup_filename,
-                         upload_filename=filename)
 
-        if not self.check_upload(storage_file_id=filename, local_file_path=backup_filename):
+        upload_filename = os.path.join(self.base_backup_dir, filename)
+        self.logger.info('uploading backup')
+        self.upload_file(local_file_path=backup_filename,
+                         upload_filename=upload_filename)
+
+        if not self.check_upload(storage_file_id=upload_filename, local_file_path=backup_filename):
             raise DatabaseUploadError
         os.remove(backup_filename)
 
@@ -77,14 +77,16 @@ class BackupDb(BaseBackup):
             file_path = os.path.join(self.base_backup_dir, file_name)
             try:
                 # Getting creation time
-                creation_time = os.path.getctime(file_path)
+
+                creation_time = storages.get_modified_time(file_path)
+
                 # Getting file size
-                file_size = os.path.getsize(file_path)
+                file_size = storages.size(file_path)
                 # Convert creation time to a readable format if necessary, e.g., time.ctime(creation_time)
                 files_with_details.append({
-                    'file_name': file_name,
-                    'created_time': time.ctime(creation_time),
-                    'file_size': file_size  # Size in bytes
+                    'name': file_name,
+                    'created_time': creation_time,
+                    'size': file_size  # Size in bytes
                 })
             except OSError:
                 # Handle error if file is not accessible
@@ -100,7 +102,7 @@ class BackupDb(BaseBackup):
     def prune_old_backups(self, recipe):
         backup_dict = self.get_db_backup_files()
 
-        backup_dict = {b['createdTime']: b['file_name'] for b in backup_dict}
+        backup_dict = {b['created_time']: b['name'] for b in backup_dict}
 
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)

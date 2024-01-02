@@ -80,7 +80,7 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
                  {'visible': len(self.schemas) > 1}),
                 (f'gdrive_backup:schema_info,{self.schemas[0][0]}', f'View {self.schemas[0][0]}',
                  {'visible': len(self.schemas) == 1}),
-                ('gdrive_backup:confirm_empty_trash', 'Empty Trash', {'css_classes': 'btn btn-warning'}),
+                # ('gdrive_backup:confirm_empty_trash', 'Empty Trash', {'css_classes': 'btn btn-warning'}),
                 ('gdrive_backup:confirm_drop_schema,-', 'Drop Public Schema',
                  {'css_classes': 'btn btn-danger', 'visible': getattr(settings, 'DEBUG', False)}),
             )
@@ -100,34 +100,34 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
     @staticmethod
     def setup_files(table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
-                          DateTimeColumn(title='Backup Date', field='createdTime'),
+                          DateTimeColumn(title='Backup Date', field='created_time'),
                           DatatableColumn(column_name='drop_restore',
                                           render=[row_button('drop_restore', 'Drop Restore',
                                                              button_classes='btn btn-warning btn-sm',)]),
                           restore_table_button('Restore DB'))
-        table.sort('-createdTime')
+        table.sort('-created_time')
         table.table_options['stateSave'] = False
 
     @ConfirmAjaxMethod(message='This will overwrite the current database and data could be lost')
     def row_drop_restore(self, row_data, **kwargs):
         table_row = json.loads(row_data)
         return self.command_response('show_modal',
-                                     modal = reverse_modal('gdrive_backup:restore_db'
-                                                           ,base64={'pk': table_row[0], 'drop_schema': 'public'}))
+                                     modal=reverse_modal('gdrive_backup:restore_db',
+                                                         base64={'pk': table_row[0], 'drop_schema': 'public'}))
 
-    @staticmethod
-    def setup_deleted_files(table):
-        table.add_columns('.id', 'name', 'size', DateTimeColumn(title='Backup Date', field='createdTime'),
-                          DatatableColumn(column_name='Undelete', render=[row_button(
-                              'undelete', 'Undelete', button_classes='btn btn-secondary btn-sm'
-                          )]))
-        table.sort('-createdTime')
-        table.table_options['stateSave'] = False
-
-    def row_undelete(self, row_no, **_kwargs):
-        db = Backup().get_backup_db()
-        db.drive.service.files().update(fileId=row_no[1:], body={'trashed': False}).execute()
-        return self.command_response('reload')
+    # @staticmethod
+    # def setup_deleted_files(table):
+    #     table.add_columns('.id', 'name', 'size', DateTimeColumn(title='Backup Date', field='created_time'),
+    #                       DatatableColumn(column_name='Undelete', render=[row_button(
+    #                           'undelete', 'Undelete', button_classes='btn btn-secondary btn-sm'
+    #                       )]))
+    #     table.sort('-created_time')
+    #     table.table_options['stateSave'] = False
+    #
+    # def row_undelete(self, row_no, **_kwargs):
+    #     db = Backup().get_backup_db()
+    #     db.drive.service.files().update(fileId=row_no[1:], body={'trashed': False}).execute()
+    #     return self.command_response('reload')
 
     def setup_schemas(self, table):
         table.add_columns(
@@ -174,9 +174,9 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
     @staticmethod
     def setup_files(table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
-                          DateTimeColumn(title='Backup Date', field='createdTime'),
+                          DateTimeColumn(title='Backup Date', field='created_time'),
                           restore_table_button('Restore Table'))
-        table.sort('-createdTime')
+        table.sort('-created_time')
         table.table_options['stateSave'] = False
 
     def row_download_xls(self,  **kwargs):

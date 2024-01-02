@@ -88,9 +88,9 @@ class BaseBackup:
         # Compare MD5 checksums
         return md5_local == md5_storage
 
-    def upload_file(self, file_path, upload_filename):
+    def upload_file(self, local_file_path, upload_filename):
         storage = self.get_storages()
-        with open(file_path, 'rb') as f:
+        with open(local_file_path, 'rb') as f:
             file = File(f)
             storage_file_id = storage.save(upload_filename, file)
         return storage.url(storage_file_id)
