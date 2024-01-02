@@ -130,6 +130,10 @@ class BaseBackup:
         storage = self.get_storages()
         if storage.exists(file_path):
             storage.delete(file_path)
+        raw_path = file_path.split('.')[0]
+        app_file_path = f'{raw_path}.json'
+        if storage.exists(app_file_path):
+            storage.delete(app_file_path)
 
     def get_storages(self):
         if self._storage is None:
