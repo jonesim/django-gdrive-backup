@@ -103,11 +103,10 @@ class BackupDb(BaseBackup):
         backup_dict = self.get_db_backup_files()
 
         backup_dict = {b['created_time']: b['name'] for b in backup_dict}
-
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
         for k in removal:
-            self.trash_file(k)
+            self.trash_file(removal[k]['id'])
 
 
 class PostgresBackup:
