@@ -20,10 +20,14 @@ from .sql_functions import get_schemas, get_schema_tables, get_table_column_name
 from .tasks import ajax_backup
 
 
+def allowed_to_restore():
+    return getattr(settings, 'BACKUP_ALLOW_RESTORE', getattr(settings, 'DEBUG', False))
+
+
 def restore_table_button(text):
     return ModalLink(row=True, base64=True, modal_name='gdrive_backup:confirm_restore_db',
                      css_class='btn btn-danger btn-sm', title='Restore', button_text=text,
-                     enabled=getattr(settings, 'DEBUG', False))
+                     enabled=allowed_to_restore())
 
 
 class TableBackup(AjaxTaskMixin, AjaxHelpers):
@@ -82,7 +86,7 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
                  {'visible': len(self.schemas) == 1}),
                 ('gdrive_backup:confirm_empty_trash', 'Empty Trash', {'css_classes': 'btn btn-warning'}),
                 ('gdrive_backup:confirm_drop_schema,-', 'Drop Public Schema',
-                 {'css_classes': 'btn btn-danger', 'visible': getattr(settings, 'DEBUG', False)}),
+                 {'css_classes': 'btn btn-danger', 'visible': allowed_to_restore()}),
             )
 
     # noinspection PyAttributeOutsideInit
@@ -101,7 +105,7 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
     def setup_files(table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
                           DateTimeColumn(title='Backup Date', field='createdTime'),
-                          DatatableColumn(column_name='drop_restore',
+                          DatatableColumn(column_name='drop_restore', enabled=allowed_to_restore(),
                                           render=[row_button('drop_restore', 'Drop Restore',
                                                              button_classes='btn btn-warning btn-sm',)]),
                           restore_table_button('Restore DB'))
@@ -109,11 +113,11 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
         table.table_options['stateSave'] = False
 
     @ConfirmAjaxMethod(message='This will overwrite the current database and data could be lost')
-    def row_drop_restore(self, row_data, **kwargs):
+    def row_drop_restore(self, row_data, **_kwargs):
         table_row = json.loads(row_data)
         return self.command_response('show_modal',
-                                     modal = reverse_modal('gdrive_backup:restore_db'
-                                                           ,base64={'pk': table_row[0], 'drop_schema': 'public'}))
+                                     modal=reverse_modal('gdrive_backup:restore_db'
+                                                         ,base64={'pk': table_row[0], 'drop_schema': 'public'}))
 
     @staticmethod
     def setup_deleted_files(table):
