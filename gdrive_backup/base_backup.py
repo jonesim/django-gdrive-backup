@@ -136,6 +136,6 @@ class BaseBackup:
 
     def get_storages(self):
         if self._storage is None:
-            storage_class = import_string(settings.DEFAULT_FILE_STORAGE)
+            storage_class = import_string(settings.BACKUP_STORAGE_CLASS)
             self._storage = storage_class(**settings.BACKUP_STORAGE_KWARGS)
         return self._storage
