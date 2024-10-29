@@ -4,7 +4,7 @@ from io import BytesIO
 
 from django.conf import settings
 from django.core.files import File
-from django.core.files.storage import get_storage_class
+from django.utils.module_loading import import_string
 
 
 class BaseBackup:
@@ -24,8 +24,7 @@ class BaseBackup:
 
         # Iterate over all files in the storage
         storage = self.get_storages()
-        for file_name in storage.listdir(backup_dir_prefix)[
-            1]:  # [1] is for files, [0] would be for directories
+        for file_name in storage.listdir(backup_dir_prefix)[1]:  # [1] is for files, [0] would be for directories
             # Apply any extra query filtering here if necessary
             if extra_query and not self.matches_extra_query(file_name, extra_query):
                 continue
@@ -137,6 +136,6 @@ class BaseBackup:
 
     def get_storages(self):
         if self._storage is None:
-            storage_class = get_storage_class(settings.BACKUP_STORAGE_CLASS)
+            storage_class = import_string(settings.DEFAULT_FILE_STORAGE)
             self._storage = storage_class(**settings.BACKUP_STORAGE_KWARGS)
         return self._storage
