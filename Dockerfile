@@ -1,4 +1,4 @@
-FROM python:3.8.3
+FROM python:3.12.7
 
 ENV PYTHONUNBUFFERED 1
 
@@ -8,4 +8,4 @@ COPY requirements.txt /app/
 RUN pip install --upgrade pip
 RUN pip install -r /app/requirements.txt
 RUN apt-get update -y
-RUN apt-get -y install postgresql-client-11
+RUN apt-get -y install postgresql-client-15
