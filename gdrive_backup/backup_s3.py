@@ -1,17 +1,19 @@
 import os
 
 from gdrive_backup.base_backup import BaseBackup
-from django.core.files.storage import get_storage_class
+from django.core.files.storage import storages
 
 
 class BackupS3(BaseBackup):
 
     def __init__(self, access_key_id, access_key, backup_dir, logger):
         super().__init__(backup_dir, logger)
-        self.s3_storage = get_storage_class('storages.backends.s3boto3.S3Boto3Storage')(
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=access_key
-        )
+
+        self.s3_storage = storages.create_storage({
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+            "aws_access_key_id": access_key_id,
+            "aws_secret_access_key": access_key
+        })
 
     def backup(self, prefix, destination):
         _, files = self.s3_storage.listdir(prefix)
