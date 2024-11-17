@@ -69,8 +69,8 @@ class BaseBackup:
     def check_upload(self, storage_file_id, local_file_path):
         storage = self.get_storages()
         # Check if the file exists in the storage
-        if not storage.exists(storage_file_id):
-            return False
+        # if not storage.exists(storage_file_id):
+        #    return False
 
         # Calculate MD5 checksum for the local file
         md5_local = self.md5sum(local_file_path)
