@@ -1,7 +1,9 @@
 import hashlib
 import os
+import time
 from io import BytesIO
 
+from botocore.exceptions import ClientError, BotoCoreError
 from django.conf import settings
 from django.core.files import File
 from django.utils.module_loading import import_string
@@ -89,9 +91,27 @@ class BaseBackup:
 
     def upload_file(self, local_file_path, upload_filename):
         storage = self.get_storages()
-        with open(local_file_path, 'rb') as f:
-            file = File(f)
-            storage_file_id = storage.save(upload_filename, file)
+
+        def do_upload():
+            with open(local_file_path, 'rb') as f:
+                file = File(f)
+                return storage.save(upload_filename, file)
+
+        self.logger.info(f"Uploading file {local_file_path} to {upload_filename}")
+        start = time.time()
+
+        try:
+            storage_file_id = do_upload()
+        except (ClientError, BotoCoreError, OSError) as e:
+            self.logger.warning(f"Initial upload failed for {upload_filename}: {e}. Retrying once...")
+            try:
+                storage_file_id = do_upload()
+            except Exception as final_error:
+                self.logger.error(f"Upload failed again for {upload_filename}: {final_error}")
+                raise
+
+        duration = time.time() - start
+        self.logger.info(f"Upload complete: {upload_filename} ({duration:.2f}s)")
         return storage.url(storage_file_id)
 
     def download_file(self, storage_file_path, local_file_path):

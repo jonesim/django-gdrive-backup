@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import subprocess
+import time
 import urllib.parse
 from tempfile import NamedTemporaryFile
 
@@ -158,15 +159,8 @@ class PostgresBackup:
         self.psql(['-f', decompressed_name])
         os.remove(decompressed_name)
 
-    def backup_db(self, backup_local_db_dir, filename):
-        self.logger.info('Creating backup file ' + filename)
-        if backup_local_db_dir:
-            if not os.path.exists(backup_local_db_dir):
-                os.makedirs(backup_local_db_dir)
-            backup_path = backup_local_db_dir + '/' + filename
-        else:
-            backup_path = filename
-        with open(backup_path, 'wb') as db_backup:
+    def run_pg_dump(self, output_path):
+        with open(output_path, 'wb') as db_backup:
             commands = ['pg_dump', '-d', self.connection_string]
             if self.table:
                 self.logger.info(f'Backing up table {self.schema}.{self.table}')
@@ -175,9 +169,43 @@ class PostgresBackup:
                 self.logger.info(f'Backing up schema {self.schema}')
                 commands += ['-c', '-n', self.schema]
             else:
-                self.logger.info(f'Backing up database')
+                self.logger.info('Backing up database')
                 commands += ['-c']
-            dump_process = subprocess.Popen(commands, stdout=db_backup)
-            dump_process.wait()
+
+            self.logger.info(f"Running pg_dump with command: {' '.join(commands)}")
+
+            start_time = time.time()
+            result = subprocess.run(
+                commands,
+                stdout=db_backup,
+                stderr=subprocess.PIPE,
+                timeout=1800  # 30 minutes
+            )
+            duration = time.time() - start_time
+            if result.returncode != 0:
+                self.logger.error(f"pg_dump failed after {duration:.2f}s: {result.stderr.decode()}")
+                raise Exception("pg_dump failed")
+            self.logger.info(f"pg_dump completed successfully in {duration:.2f} seconds")
+
+    def backup_db(self, backup_local_db_dir, filename):
+        self.logger.info('Creating backup file ' + filename)
+        if backup_local_db_dir:
+            if not os.path.exists(backup_local_db_dir):
+                os.makedirs(backup_local_db_dir)
+            backup_path = os.path.join(backup_local_db_dir, filename)
+        else:
+            backup_path = filename
+
+        try:
+            self.run_pg_dump(backup_path)
+        except Exception as e:
+            self.logger.warning(f"Initial pg_dump attempt failed: {e}. Retrying once...")
+            try:
+                self.run_pg_dump(backup_path)
+            except Exception as final_error:
+                self.logger.error(f"Backup failed again: {final_error}")
+                raise final_error
+
+        self.logger.info(f"Compressing backup file {backup_path}")
         compress(backup_path, compression)
         return backup_path + '.' + compression
