@@ -8,17 +8,17 @@ from .backup import Backup
 logger = logging.getLogger(__name__)
 
 
-@shared_task
+@shared_task(queue='backups')
 def backup():
     Backup().backup_db_and_folders()
 
 
-@shared_task
+@shared_task(queue='backups')
 def backup_all_schemas():
     Backup().backup_db_and_folders(all_schemas=True)
 
 
-@shared_task
+@shared_task(queue='backups')
 def empty_trash():
     db = Backup().get_backup_db()
     db.drive.service.files().emptyTrash().execute()
