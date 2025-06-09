@@ -74,8 +74,12 @@ class BackupDb(BaseBackup):
 
         if not self.check_upload(storage_file_id=upload_filename, local_file_path=backup_filename):
             raise DatabaseUploadError
+
+        self.logger.info('Removing backup')
         os.remove(backup_filename)
+        self.logger.info('Removing backup part2')
         os.remove(backup_app_filename)
+        self.logger.info('Finished')
 
     def restore_cloud_storage_db(self, file_id=None, file_name=None):
         assert False
@@ -132,12 +136,14 @@ class BackupDb(BaseBackup):
             return files[0]
 
     def prune_old_backups(self, recipe):
+
         backup_dict = self.get_db_backup_files()
         backup_dict = {b['created_time']: b['name'] for b in backup_dict}
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
 
         for file in removal.values():
+            self.logger.info('Removing old backup')
             delete_file = os.path.join(self.base_backup_dir, file)
             self.trash_file(delete_file)
 
