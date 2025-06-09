@@ -34,12 +34,13 @@ class Backup:
                 self.logger.info(f'Backing up db {s}')
                 db = self.get_backup_db(s, table, sub_folder)
                 db.backup_db_and_upload()
-                if not sub_folder:
-                    self.logger.info('pruning old backups')
-                    db.prune_old_backups(settings.BACKUP_DB_RETENTION)
-                    self.logger.info('pruned old backups')
+                # if not sub_folder:
+                #     self.logger.info('pruning old backups')
+                #     db.prune_old_backups(settings.BACKUP_DB_RETENTION)
+                #     self.logger.info('pruned old backups')
                 self.logger.info('Finished schema')
             self.logger.info('Finished all schemas')
+
 
         if include_folders and hasattr(settings, 'BACKUP_DIRS'):
             b = BackupLocal(settings.BACKUP_STORAGE_DIR, self.logger)
