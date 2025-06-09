@@ -136,12 +136,15 @@ class BackupDb(BaseBackup):
             return files[0]
 
     def prune_old_backups(self, recipe):
-
+        self.logger.info('pruning old backups')
         backup_dict = self.get_db_backup_files()
+        self.logger.info('got backup dict')
+
         backup_dict = {b['created_time']: b['name'] for b in backup_dict}
         pb = PruneBackups(backup_dict)
+        self.logger.info('pruning old backups b')
         removal = pb.backups_to_remove(recipe)
-
+        self.logger.info('pruning old backups c')
         for file in removal.values():
             self.logger.info('Removing old backup')
             delete_file = os.path.join(self.base_backup_dir, file)
