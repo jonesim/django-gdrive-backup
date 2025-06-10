@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.parse
@@ -92,13 +93,15 @@ class BackupDb(BaseBackup):
     def get_db_backup_files(self):
         storages = self.get_storages()
         _, file_names = storages.listdir(self.base_backup_dir)
-
+        self.logger.info('get_db_backup_files 1')
         # List of dictionaries with file name and creation time
         files_with_details = []
 
         for file_name in file_names:
             if file_name.endswith('.json'):
                 continue
+
+            self.logger.info(f'get_db_backup_files {file_name}')
 
             file_path = os.path.join(self.base_backup_dir, file_name)
 
@@ -115,6 +118,7 @@ class BackupDb(BaseBackup):
 
                 # Getting file size
                 file_size = storages.size(file_path)
+
                 # Convert creation time to a readable format if necessary, e.g., time.ctime(creation_time)
                 files_with_details.append({
                     'name': file_name,
@@ -130,6 +134,29 @@ class BackupDb(BaseBackup):
 
         return files_with_details
 
+    def get_db_backup_files_for_prune(self):
+        storages = self.get_storages()
+        _, file_names = storages.listdir(self.base_backup_dir)
+        self.logger.info('get_db_backup_files lite')
+
+        backup_files = {}
+
+        for file_name in file_names:
+            if file_name.endswith('.json'):
+                continue
+
+            self.logger.info(f'get_db_backup_files lite {file_name}')
+            match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2})\.bz2$', file_name)
+            if match:
+                date_str = match.group(1)
+                try:
+                    creation_time = datetime.datetime.strptime(date_str, "%Y_%m_%d_%H_%M")
+                    backup_files[creation_time] = file_name
+                except ValueError:
+                    self.logger.warning(f"Could not parse datetime from {file_name}")
+
+        return backup_files
+
     def get_latest_db_backup(self):
         files = self.get_db_backup_files()
         if len(files) > 0:
@@ -137,10 +164,8 @@ class BackupDb(BaseBackup):
 
     def prune_old_backups(self, recipe):
         self.logger.info('pruning old backups')
-        backup_dict = self.get_db_backup_files()
+        backup_dict = self.get_db_backup_files_for_prune()
         self.logger.info('got backup dict')
-
-        backup_dict = {b['created_time']: b['name'] for b in backup_dict}
         pb = PruneBackups(backup_dict)
         self.logger.info('pruning old backups b')
         removal = pb.backups_to_remove(recipe)
