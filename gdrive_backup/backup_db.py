@@ -153,7 +153,7 @@ class BackupDb(BaseBackup):
                     creation_time = datetime.datetime.strptime(date_str, "%Y_%m_%d_%H_%M")
                     backup_files[creation_time] = file_name
                 except ValueError:
-                    self.logger.warning(f"Could not parse datetime from {file_name}")
+                    self.logger.info(f"Could not parse datetime from {file_name}")
 
         return backup_files
 
@@ -233,7 +233,7 @@ class PostgresBackup:
         try:
             self.run_pg_dump(backup_path)
         except Exception as e:
-            self.logger.warning(f"Initial pg_dump attempt failed: {e}. Retrying once...")
+            self.logger.info(f"Initial pg_dump attempt failed: {e}. Retrying once...")
             try:
                 self.run_pg_dump(backup_path)
             except Exception as final_error:
