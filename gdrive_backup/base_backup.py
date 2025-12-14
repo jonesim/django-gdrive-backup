@@ -53,7 +53,7 @@ class BaseBackup:
         return file_hash.hexdigest()
 
     def check_upload(self, google_file, local_file):
-        saved_file = self.drive.service.files().get(fileId=a, fields='size, md5Checksum',
+        saved_file = self.drive.service.files().get(fileId=google_file['id'], fields='size, md5Checksum',
                                                     supportsAllDrives=True).execute()
         md5 = self.md5sum(local_file)
         file_length = os.path.getsize(local_file)
