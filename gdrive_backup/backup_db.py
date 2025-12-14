@@ -84,7 +84,8 @@ class BackupDb(BaseBackup):
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
         for k in removal:
-            self.drive.service.files().update(fileId=removal[k]['id'], body={'trashed': True}).execute()
+            self.drive.service.files().update(fileId=removal[k]['id'], body={'trashed': True},
+                                              supportsAllDrives=True).execute()
 
 
 class PostgresBackup:

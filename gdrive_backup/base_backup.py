@@ -1,14 +1,20 @@
 import os
 import hashlib
+
+from django.conf import settings
 from google_client.drive import GoogleDrive
 
 
 class BaseBackup:
 
     def __init__(self, google_credentials, base_backup_dir, logger):
-        self.drive = GoogleDrive(google_credentials)
+        shared_drive = getattr(settings, 'BACKUP_TEAM_DRIVE')
+        self.drive = GoogleDrive(google_credentials, shared_drive=shared_drive)
         self.logger = logger
-        self.base_backup_dir = self.drive.find_create_folder(base_backup_dir, shared_with_me=True)
+        if shared_drive:
+            self.base_backup_dir = self.drive.find_create_folder(base_backup_dir)
+        else:
+            self.base_backup_dir = self.drive.find_create_folder(base_backup_dir, shared_with_me=True)
 
     def get_existing_backup_files(self, google_drive_dir, extra_query=None):
         if not extra_query:
@@ -47,7 +53,8 @@ class BaseBackup:
         return file_hash.hexdigest()
 
     def check_upload(self, google_file, local_file):
-        saved_file = self.drive.service.files().get(fileId=google_file['id'], fields='size, md5Checksum').execute()
+        saved_file = self.drive.service.files().get(fileId=a, fields='size, md5Checksum',
+                                                    supportsAllDrives=True).execute()
         md5 = self.md5sum(local_file)
         file_length = os.path.getsize(local_file)
         if md5 == saved_file['md5Checksum'] and file_length == int(saved_file['size']):
