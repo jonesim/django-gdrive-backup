@@ -26,7 +26,7 @@ def decompress(filename):
 def compress(filename, compression_type):
     if compression_type == 'bz2':
         with open(filename, 'rb') as input_file:
-            with bz2.BZ2File(filename + '.' + compression_type, 'wb', compresslevel=9) as output:
+            with bz2.BZ2File(filename + '.' + compression_type, 'wb', compresslevel=1) as output:
                 copyfileobj(input_file, output, 1024*1024)
         os.remove(filename)
 

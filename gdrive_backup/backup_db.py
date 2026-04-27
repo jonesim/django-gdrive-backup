@@ -1,3 +1,4 @@
+import bz2
 import datetime
 import os
 import subprocess
@@ -113,18 +114,20 @@ class PostgresBackup:
             backup_path = backup_local_db_dir + '/' + filename
         else:
             backup_path = filename
-        with open(backup_path, 'wb') as db_backup:
-            commands = ['pg_dump', '-d', self.connection_string]
-            if self.table:
-                self.logger.info(f'Backing up table {self.schema}.{self.table}')
-                commands += ['-a', '-t', f'{self.schema}.{self.table}']
-            elif self.schema:
-                self.logger.info(f'Backing up schema {self.schema}')
-                commands += ['-c', '-n', self.schema]
-            else:
-                self.logger.info(f'Backing up database')
-                commands += ['-c']
-            dump_process = subprocess.Popen(commands, stdout=db_backup)
+        commands = ['pg_dump', '-d', self.connection_string]
+        if self.table:
+            self.logger.info(f'Backing up table {self.schema}.{self.table}')
+            commands += ['-a', '-t', f'{self.schema}.{self.table}']
+        elif self.schema:
+            self.logger.info(f'Backing up schema {self.schema}')
+            commands += ['-c', '-n', self.schema]
+        else:
+            self.logger.info(f'Backing up database')
+            commands += ['-c']
+        compressed_path = backup_path + '.' + compression
+        with bz2.BZ2File(compressed_path, 'wb', compresslevel=1) as output:
+            dump_process = subprocess.Popen(commands, stdout=subprocess.PIPE)
+            for chunk in iter(lambda: dump_process.stdout.read(1024 * 1024), b''):
+                output.write(chunk)
             dump_process.wait()
-        compress(backup_path, compression)
-        return backup_path + '.' + compression
+        return compressed_path
