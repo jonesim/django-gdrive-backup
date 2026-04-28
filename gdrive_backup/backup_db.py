@@ -1,4 +1,3 @@
-import bz2
 import datetime
 import os
 import subprocess
@@ -8,11 +7,11 @@ from tempfile import NamedTemporaryFile
 import requests
 
 from .base_backup import BaseBackup
-from .compression import decompress, compress
+from .compression import decompress
 from .prune_backups import PruneBackups
 from .sql_functions import delete_table
 
-compression = 'bz2'
+DUMP_EXTENSION = 'dump'
 
 
 def get_ip_address():
@@ -50,7 +49,7 @@ class BackupDb(BaseBackup):
             filename = f'schema_{self.postgres_backup.schema}'
         else:
             filename = 'db'
-        filename += f'_{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}.{compression}'
+        filename += f'_{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}.{DUMP_EXTENSION}'
         backup_stream = NamedTemporaryFile(delete=False)
         backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
         self.logger.info('Copying backup to Google Drive')
@@ -71,7 +70,8 @@ class BackupDb(BaseBackup):
 
     def get_db_backup_files(self, trashed=False, extra_q=''):
         return self.drive.file_list(q=f"{self.drive.build_q(trashed=trashed, folder=self.base_backup_dir)}"
-                                    f" and mimeType contains 'application/x-'{extra_q}", orderBy='createdTime desc')
+                                    f" and (mimeType contains 'application/x-' or name contains '.dump'){extra_q}",
+                                    orderBy='createdTime desc')
 
     def get_latest_db_backup(self):
         files = self.get_db_backup_files()
@@ -102,9 +102,13 @@ class PostgresBackup:
         subprocess.call(['psql', '-d',  self.connection_string] + commands)
 
     def restore_db(self, backup_file):
-        decompressed_name = decompress(backup_file)
-        self.psql(['-f', decompressed_name])
-        os.remove(decompressed_name)
+        if backup_file.endswith('.dump'):
+            subprocess.call(['pg_restore', '-d', self.connection_string, '--clean', '--if-exists', backup_file])
+            os.remove(backup_file)
+        else:
+            decompressed_name = decompress(backup_file)
+            self.psql(['-f', decompressed_name])
+            os.remove(decompressed_name)
 
     def backup_db(self, backup_local_db_dir, filename):
         self.logger.info('Creating backup file ' + filename)
@@ -114,20 +118,19 @@ class PostgresBackup:
             backup_path = backup_local_db_dir + '/' + filename
         else:
             backup_path = filename
-        commands = ['pg_dump', '-d', self.connection_string]
+        commands = ['pg_dump', '-Fc', '-d', self.connection_string]
         if self.table:
             self.logger.info(f'Backing up table {self.schema}.{self.table}')
             commands += ['-a', '-t', f'{self.schema}.{self.table}']
         elif self.schema:
             self.logger.info(f'Backing up schema {self.schema}')
-            commands += ['-c', '-n', self.schema]
+            commands += ['-n', self.schema]
         else:
             self.logger.info(f'Backing up database')
-            commands += ['-c']
-        compressed_path = backup_path + '.' + compression
-        with bz2.BZ2File(compressed_path, 'wb', compresslevel=1) as output:
+        dump_path = backup_path + '.' + DUMP_EXTENSION
+        with open(dump_path, 'wb') as output:
             dump_process = subprocess.Popen(commands, stdout=subprocess.PIPE)
             for chunk in iter(lambda: dump_process.stdout.read(1024 * 1024), b''):
                 output.write(chunk)
             dump_process.wait()
-        return compressed_path
+        return dump_path
