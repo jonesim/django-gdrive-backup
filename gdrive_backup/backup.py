@@ -31,7 +31,9 @@ class Backup:
                         getattr(settings, 'BACKUP_LOCAL_DB_DIR', gettempdir()),
                         self.logger,
                         schema=schema,
-                        table=table)
+                        table=table,
+                        exclude_tables=getattr(settings, 'BACKUP_EXCLUDE_TABLES', None),
+                        exclude_table_data=getattr(settings, 'BACKUP_EXCLUDE_TABLE_DATA', None))
 
     def backup_db_and_folders(self, schema=None, table=None, include_db=True, all_schemas=False,
                               include_folders=True, include_s3_folders=True, sub_folder=None):

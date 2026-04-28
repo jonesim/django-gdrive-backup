@@ -33,9 +33,11 @@ class DatabaseUploadError(Exception):
 class BackupDb(BaseBackup):
 
     def __init__(self, google_credentials, google_backup_dir, database, local_backup_dir, logger, schema=None,
-                 table=None):
+                 table=None, exclude_tables=None, exclude_table_data=None):
         super().__init__(google_credentials, google_backup_dir, logger)
-        self.postgres_backup = PostgresBackup(database, self.logger, schema, table)
+        self.postgres_backup = PostgresBackup(database, self.logger, schema, table,
+                                              exclude_tables=exclude_tables,
+                                              exclude_table_data=exclude_table_data)
         self.local_backup_dir = local_backup_dir
 
     def backup_db_gdrive(self):
@@ -91,10 +93,12 @@ class BackupDb(BaseBackup):
 
 class PostgresBackup:
 
-    def __init__(self, database, logger, schema=None, table=None):
+    def __init__(self, database, logger, schema=None, table=None, exclude_tables=None, exclude_table_data=None):
         self.logger = logger
         self.schema = schema
         self.table = table
+        self.exclude_tables = exclude_tables or []
+        self.exclude_table_data = exclude_table_data or []
         self.connection_string = (f'postgresql://{database["USER"]}:{urllib.parse.quote(database["PASSWORD"])}'
                                   f'@{database["HOST"]}/{database["NAME"]}')
 
@@ -127,6 +131,10 @@ class PostgresBackup:
             commands += ['-n', self.schema]
         else:
             self.logger.info(f'Backing up database')
+        for t in self.exclude_tables:
+            commands += [f'--exclude-table={t}']
+        for t in self.exclude_table_data:
+            commands += [f'--exclude-table-data={t}']
         dump_path = backup_path + '.' + DUMP_EXTENSION
         with open(dump_path, 'wb') as output:
             dump_process = subprocess.Popen(commands, stdout=subprocess.PIPE)
