@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-gdrive-backup"
+version = "0.0.12"
+description = "Backs up django postgres databases, local folders and S3 folders to a Google Drive folder through a google service account."
+readme = "README.md"
+requires-python = ">=3.6"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Ian Jones" },
+]
+dependencies = [
+    "encrypted-credentials",
+    "google-client-helper",
+    "requests",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3"]
+
+[project.urls]
+Homepage = "https://github.com/jonesim/django-gdrive-backup"
+
+[tool.setuptools.packages.find]
+include = ["gdrive_backup", "gdrive_backup.*"]
+
+[tool.setuptools]
+include-package-data = true
