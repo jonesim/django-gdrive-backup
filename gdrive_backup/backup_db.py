@@ -73,7 +73,8 @@ class BackupDb(BaseBackup):
             self.logger.info('Copying backup to storage')
             with open(backup_filename, 'rb') as compressed_file:
                 stored_file = self.storage.upload(self.base_backup_dir, filename, compressed_file,
-                                                  metadata=metadata)
+                                                  metadata=metadata,
+                                                  lock_days=self.storage.lock_days('db'))
             if not self.check_upload(stored_file, backup_filename):
                 raise DatabaseUploadError
         finally:

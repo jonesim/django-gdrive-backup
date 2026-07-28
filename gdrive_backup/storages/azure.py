@@ -75,7 +75,8 @@ class AzureStorage(BackupStorage):
     def find_file(self, folder, name):
         return self.get_file(f"{folder['id']}/{name}")
 
-    def upload(self, folder, name, stream, metadata=None):
+    def upload(self, folder, name, stream, metadata=None, lock_days=None):
+        # lock_days is ignored - Azure immutability policies are container-level config
         key = f"{folder['id']}/{name}"
         if metadata:
             metadata = {k: str(v) for k, v in metadata.items()}

@@ -23,6 +23,12 @@ class BackupStorage:
     """
 
     supports_trash = False
+    lock = {}  # object-lock config where the backend supports it (currently only s3)
+
+    def lock_days(self, kind):
+        """Object-lock retention days configured for 'db' or 'file' uploads, or None
+        when the backend has no object lock configured."""
+        return self.lock.get(kind + '_days')
 
     def ensure_folder(self, path, parent=None):
         """Return a folder handle for path (relative to parent), creating it if needed."""
@@ -56,9 +62,16 @@ class BackupStorage:
         """Return the normalised dict for a named file in a folder, or raise StorageFileNotFound."""
         raise NotImplementedError
 
-    def upload(self, folder, name, stream, metadata=None):
-        """Upload a binary stream and return the normalised dict of the stored file."""
+    def upload(self, folder, name, stream, metadata=None, lock_days=None):
+        """Upload a binary stream and return the normalised dict of the stored file.
+        lock_days applies object-lock retention where the backend supports it and is
+        ignored otherwise."""
         raise NotImplementedError
+
+    def extend_retention(self, folder, min_days, workers=8):
+        """Ensure every file under folder keeps at least min_days of object-lock
+        retention. No-op (returns None) on backends without object lock."""
+        return None
 
     def verify_upload(self, stored_file, local_path):
         """Check a completed upload against the local source file."""

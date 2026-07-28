@@ -1,4 +1,7 @@
+import concurrent.futures
 import os
+import threading
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 import boto3
@@ -34,7 +37,7 @@ class S3Storage(BackupStorage):
     supports_trash = False
 
     def __init__(self, bucket, access_key_id=None, secret_key=None, endpoint_url=None,
-                 region=None, b2=False):
+                 region=None, b2=False, lock=None):
         if b2 and endpoint_url is None:
             endpoint_url = b2_s3_endpoint(access_key_id, secret_key)
             if region is None:
@@ -43,7 +46,17 @@ class S3Storage(BackupStorage):
         self.s3 = boto3.client('s3', aws_access_key_id=access_key_id, aws_secret_access_key=secret_key,
                                endpoint_url=endpoint_url, region_name=region)
         self.bucket = bucket
+        self.lock = lock or {}
+        self.lock_mode = self.lock.get('mode', 'COMPLIANCE')
         self.transfer_config = TransferConfig(multipart_threshold=64 * 1024 * 1024)
+
+    def _lock_args(self, lock_days):
+        """Object-lock parameters for an upload/copy - the bucket must have been
+        created with Object Lock enabled or these requests will be rejected."""
+        if not lock_days:
+            return {}
+        return {'ObjectLockMode': self.lock_mode,
+                'ObjectLockRetainUntilDate': datetime.now(timezone.utc) + timedelta(days=lock_days)}
 
     @staticmethod
     def _folder_handle(prefix):
@@ -121,12 +134,48 @@ class S3Storage(BackupStorage):
     def find_file(self, folder, name):
         return self.get_file(f"{folder['id']}/{name}")
 
-    def upload(self, folder, name, stream, metadata=None):
+    def upload(self, folder, name, stream, metadata=None, lock_days=None):
         key = f"{folder['id']}/{name}"
-        extra_args = {'Metadata': {k: str(v) for k, v in metadata.items()}} if metadata else None
-        self.s3.upload_fileobj(stream, self.bucket, key, ExtraArgs=extra_args,
+        extra_args = {'Metadata': {k: str(v) for k, v in metadata.items()}} if metadata else {}
+        extra_args.update(self._lock_args(lock_days))
+        self.s3.upload_fileobj(stream, self.bucket, key, ExtraArgs=extra_args or None,
                                Config=self.transfer_config)
         return self.get_file(key)
+
+    def extend_retention(self, folder, min_days, workers=8):
+        """Ensure every object under folder keeps at least min_days of object-lock
+        retention. Extending retention is always allowed; shortening never is, so this
+        is safe to re-run. Costs 1-2 API calls per object - schedule it rather than
+        running it with every backup."""
+        target = datetime.now(timezone.utc) + timedelta(days=min_days)
+        keys = []
+        for page in self.s3.get_paginator('list_objects_v2').paginate(Bucket=self.bucket,
+                                                                      Prefix=folder['id'] + '/'):
+            keys += [s3_object['Key'] for s3_object in page.get('Contents', [])
+                     if not s3_object['Key'].endswith('/')]
+        stats = {'checked': 0, 'extended': 0, 'errors': []}
+        stats_lock = threading.Lock()
+
+        def extend(key):
+            try:
+                head = self.s3.head_object(Bucket=self.bucket, Key=key)
+                retain_until = head.get('ObjectLockRetainUntilDate')
+                if retain_until is None or retain_until < target:
+                    self.s3.put_object_retention(
+                        Bucket=self.bucket, Key=key,
+                        Retention={'Mode': head.get('ObjectLockMode') or self.lock_mode,
+                                   'RetainUntilDate': target})
+                    with stats_lock:
+                        stats['extended'] += 1
+            except Exception as e:
+                with stats_lock:
+                    stats['errors'].append(f'{key}: {e}')
+            with stats_lock:
+                stats['checked'] += 1
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(extend, keys))
+        return stats
 
     def verify_upload(self, stored_file, local_path):
         saved = self.get_file(stored_file['id'])

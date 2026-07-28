@@ -8,6 +8,14 @@ class Logger:
     def info(text):
         print(text)
 
+    @staticmethod
+    def warning(text):
+        print('WARNING: ' + text)
+
+    @staticmethod
+    def error(text):
+        print('ERROR: ' + text)
+
 
 class Command(BaseCommand):
 
@@ -39,7 +47,15 @@ class Command(BaseCommand):
         parser.add_argument('-sub_folder',
                             type=str)
 
+        parser.add_argument('--extend_retention',
+                            action='store_true',
+                            default=False,
+                            help='Extend object-lock retention on existing backups instead of backing up')
+
     def handle(self, *args, **options):
+        if options['extend_retention']:
+            Backup(logger=Logger()).extend_file_retention()
+            return
         folder_kwargs = {}
         if options['db_only']:
             folder_kwargs['include_folders'] = False

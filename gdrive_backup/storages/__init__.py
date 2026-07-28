@@ -25,11 +25,16 @@ def get_storage(config=None):
     s3:     bucket, access_key_id, secret_key, endpoint_url, region, b2
             (endpoint_url unset = AWS; b2=True discovers the Backblaze endpoint;
              R2 uses the account endpoint_url with region='auto')
+            lock: {'mode', 'db_days', 'file_days', 'min_days'} - Object Lock retention
+            stamped on uploads (bucket must have Object Lock enabled)
     azure:  container, connection_string or account_url + credential
     """
     config = dict(config if config is not None else storage_settings())
     backend = config.pop('backend', 'gdrive')
     config.pop('root', None)
+    lock = config.pop('lock', None)
+    if backend == 's3':
+        config['lock'] = lock  # only the s3 backend supports object lock
     if backend == 'gdrive':
         from encrypted_credentials import django_credentials
         from .gdrive import GDriveStorage

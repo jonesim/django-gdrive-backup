@@ -66,3 +66,22 @@ class Backup:
                                  self.logger)
             for s3 in settings.S3_BACKUP_DIRS:
                 s3_backup.backup(settings.AWS_PRIVATE_STORAGE_BUCKET_NAME, *s3)
+
+    def extend_file_retention(self, workers=8):
+        """Ensure everything under the backup root keeps at least the configured
+        min_days of object-lock retention. Costs 1-2 API calls per file - schedule
+        daily rather than running with every backup."""
+        min_days = self.storage.lock.get('min_days')
+        if not min_days:
+            self.logger.info('No object-lock min_days configured - nothing to extend')
+            return
+        stats = self.storage.extend_retention(self.storage.ensure_folder(backup_root()), min_days,
+                                              workers=workers)
+        if stats is None:
+            self.logger.info('This storage backend does not support object-lock retention')
+            return
+        self.logger.info(f"Object-lock retention: {stats['checked']} files checked, "
+                         f"{stats['extended']} extended to {min_days} days")
+        for error in stats['errors']:
+            self.logger.warning(f'Retention not extended: {error}')
+        return stats

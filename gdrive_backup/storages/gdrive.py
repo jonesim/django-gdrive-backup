@@ -87,7 +87,8 @@ class GDriveStorage(BackupStorage):
             raise StorageFileNotFound(name)
         return self.normalise(files[0])
 
-    def upload(self, folder, name, stream, metadata=None):
+    def upload(self, folder, name, stream, metadata=None, lock_days=None):
+        # lock_days is ignored - Google Drive has no object-lock equivalent
         body = {'appProperties': metadata} if metadata else None
         google_file = self.drive.create_file_stream(name, folder['drive_folder'], stream, body=body)
         return self.get_file(google_file['id'])

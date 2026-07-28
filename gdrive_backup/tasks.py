@@ -23,6 +23,14 @@ def empty_trash():
     Backup().storage.empty_trash()
 
 
+@shared_task
+def extend_retention():
+    """Top up object-lock retention so every file backup keeps at least the configured
+    min_days of protection. Schedule daily via beat (interval must be shorter than
+    min_days)."""
+    Backup().extend_file_retention()
+
+
 class StateLogger:
 
     def __init__(self, task):
