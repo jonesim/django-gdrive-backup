@@ -50,7 +50,9 @@ class Backup:
                 db = self.get_backup_db(s, table, sub_folder)
                 db.backup_db_to_storage()
                 if not sub_folder:
-                    db.prune_old_backups(settings.BACKUP_DB_RETENTION)
+                    retention = getattr(settings, 'BACKUP_DB_RETENTION', None)
+                    if retention:
+                        db.prune_old_backups(retention)
 
         if include_folders and hasattr(settings, 'BACKUP_DIRS'):
             b = BackupLocal(self.storage, backup_root(), self.logger)

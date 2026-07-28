@@ -113,7 +113,12 @@ class BackupDb(BaseBackup):
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
         for k in removal:
-            self.storage.delete(removal[k]['id'])
+            try:
+                self.storage.delete(removal[k]['id'])
+            except Exception as e:
+                # deletes may be intentionally blocked (object lock, delete-less
+                # credentials) - the backup itself has already succeeded
+                self.logger.warning(f'Could not delete old backup {removal[k]["name"]}: {e}')
 
 
 class PostgresBackup:
