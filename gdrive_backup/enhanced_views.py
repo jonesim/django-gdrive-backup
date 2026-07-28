@@ -155,6 +155,9 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
     def get_context_data(self, **kwargs):
         self.add_page_command('ajax_post', data={'ajax': 'read_storage_info'})
         context = super().get_context_data(**kwargs)
+        # with a single table (no trash on S3/Azure, one schema) DatatableView only sets
+        # the singular 'datatable' key, but the template always uses 'datatables'
+        context['datatables'] = self.tables
         context['schema'] = self.schema
         return context
 
