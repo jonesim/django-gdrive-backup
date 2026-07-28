@@ -2,7 +2,7 @@ import datetime
 import os
 import subprocess
 import urllib.parse
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryFile
 
 import requests
 
@@ -30,6 +30,10 @@ class DatabaseUploadError(Exception):
     pass
 
 
+class DatabaseBackupError(Exception):
+    pass
+
+
 class BackupDb(BaseBackup):
 
     def __init__(self, google_credentials, google_backup_dir, database, local_backup_dir, logger, schema=None,
@@ -52,15 +56,23 @@ class BackupDb(BaseBackup):
         else:
             filename = 'db'
         filename += f'_{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}.{DUMP_EXTENSION}'
+        # only the unique name is wanted - backup_db writes to <name>.dump, so the placeholder
+        # file itself is closed and removed rather than left open for the life of the process
         backup_stream = NamedTemporaryFile(delete=False)
-        backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
-        self.logger.info('Copying backup to Google Drive')
-        with open(backup_filename, 'rb') as compressed_file:
-            google_file = self.drive.create_file_stream(filename, self.base_backup_dir, compressed_file,
-                                                        body={'appProperties': app_properties})
-        if not self.check_upload(google_file, backup_filename):
-            raise DatabaseUploadError
-        os.remove(backup_filename)
+        backup_stream.close()
+        os.remove(backup_stream.name)
+        backup_filename = None
+        try:
+            backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
+            self.logger.info('Copying backup to Google Drive')
+            with open(backup_filename, 'rb') as compressed_file:
+                google_file = self.drive.create_file_stream(filename, self.base_backup_dir, compressed_file,
+                                                            body={'appProperties': app_properties})
+            if not self.check_upload(google_file, backup_filename):
+                raise DatabaseUploadError
+        finally:
+            if backup_filename and os.path.exists(backup_filename):
+                os.remove(backup_filename)
 
     def restore_gdrive_db(self, file_id=None, file_name=None):
         file_info = self.drive.get_file(file_id=file_id)
@@ -103,16 +115,25 @@ class PostgresBackup:
                                   f'@{database["HOST"]}/{database["NAME"]}')
 
     def psql(self, commands):
-        subprocess.call(['psql', '-d',  self.connection_string] + commands)
+        return subprocess.call(['psql', '-d',  self.connection_string] + commands)
 
     def restore_db(self, backup_file):
-        if backup_file.endswith('.dump'):
-            subprocess.call(['pg_restore', '-d', self.connection_string, '--clean', '--if-exists', backup_file])
+        if backup_file.endswith('.' + DUMP_EXTENSION):
+            return_code = subprocess.call(['pg_restore', '-d', self.connection_string, '--clean', '--if-exists',
+                                           backup_file])
+            command = 'pg_restore'
             os.remove(backup_file)
         else:
             decompressed_name = decompress(backup_file)
-            self.psql(['-f', decompressed_name])
+            return_code = self.psql(['-f', decompressed_name])
+            command = 'psql'
             os.remove(decompressed_name)
+        if return_code != 0:
+            # not fatal - pg_restore exits non-zero for ignorable warnings under --clean --if-exists,
+            # but the restore may equally have failed outright, so make it visible
+            self.logger.warning(f'{command} exited with code {return_code}. Check the output above to confirm the '
+                                f'restore completed as expected.')
+        return return_code
 
     def backup_db(self, backup_local_db_dir, filename):
         self.logger.info('Creating backup file ' + filename)
@@ -136,9 +157,26 @@ class PostgresBackup:
         for t in self.exclude_table_data:
             commands += [f'--exclude-table-data={t}']
         dump_path = backup_path + '.' + DUMP_EXTENSION
-        with open(dump_path, 'wb') as output:
-            dump_process = subprocess.Popen(commands, stdout=subprocess.PIPE)
-            for chunk in iter(lambda: dump_process.stdout.read(1024 * 1024), b''):
-                output.write(chunk)
-            dump_process.wait()
+        try:
+            # stderr goes to a temp file rather than a pipe so a noisy dump cannot fill the pipe
+            # buffer and deadlock while we are still reading stdout
+            with TemporaryFile() as error_file:
+                with open(dump_path, 'wb') as output:
+                    dump_process = subprocess.Popen(commands, stdout=subprocess.PIPE, stderr=error_file)
+                    for chunk in iter(lambda: dump_process.stdout.read(1024 * 1024), b''):
+                        output.write(chunk)
+                    dump_process.wait()
+                error_file.seek(0)
+                errors = error_file.read().decode(errors='replace').strip()
+            if dump_process.returncode != 0:
+                if errors:
+                    self.logger.error(errors)
+                raise DatabaseBackupError(f'pg_dump failed with exit code {dump_process.returncode}')
+            if errors:
+                self.logger.warning(errors)
+        except BaseException:
+            # never leave a partial dump behind for the caller to upload as if it were valid
+            if os.path.exists(dump_path):
+                os.remove(dump_path)
+            raise
         return dump_path
