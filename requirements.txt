@@ -15,3 +15,4 @@ openpyxl
 psycopg2
 flower
 requests
+boto3

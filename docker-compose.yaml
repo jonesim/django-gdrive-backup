@@ -19,7 +19,7 @@ services:
    - 8011:8011
 
  redis:
-   image: redis:5.0.7-alpine
+   image: redis:7-alpine
 
  celery:
    <<: *django
