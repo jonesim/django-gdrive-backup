@@ -80,6 +80,12 @@
                 {% endif %}
             </td>
         </tr>
+        {% for p in protection %}
+        <tr>
+            <td><b>{{ p.label }}</b></td>
+            <td>{{ p.status }}{% if p.detail %} &mdash; {{ p.detail }}{% endif %}</td>
+        </tr>
+        {% endfor %}
         <tr>
             <td>
                 {% if space_used is not None %}

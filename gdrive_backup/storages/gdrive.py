@@ -129,3 +129,7 @@ class GDriveStorage(BackupStorage):
                 'web_link': folder.get('web_link') if folder else None,
                 'used': int(quota['usage']) if quota.get('usage') else None,
                 'limit': int(quota['limit']) if quota.get('limit') else None}
+
+    def protection_info(self):
+        return [{'label': 'Trash (soft delete)', 'status': 'Enabled',
+                 'detail': 'deleted backups stay in trash for 30 days unless the trash is emptied'}]

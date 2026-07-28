@@ -214,3 +214,43 @@ class S3Storage(BackupStorage):
         if folder:
             name += f"/{folder['id']}"
         return {'name': name, 'web_link': None, 'used': None, 'limit': None}
+
+    @staticmethod
+    def _protection_unknown(label, error):
+        code = error.response.get('Error', {}).get('Code') or type(error).__name__
+        return {'label': label, 'status': 'Unknown', 'detail': f'could not query ({code})'}
+
+    def protection_info(self):
+        protection = []
+        try:
+            status = self.s3.get_bucket_versioning(Bucket=self.bucket).get('Status') or 'Disabled'
+            protection.append({'label': 'Bucket versioning', 'status': status,
+                               'detail': 'overwritten and deleted objects are kept as previous versions'
+                                         if status == 'Enabled' else None})
+        except ClientError as e:
+            protection.append(self._protection_unknown('Bucket versioning', e))
+        worm = 'Object Lock (WORM)'
+        try:
+            config = self.s3.get_object_lock_configuration(Bucket=self.bucket)
+            config = config.get('ObjectLockConfiguration', {})
+            enabled = config.get('ObjectLockEnabled') == 'Enabled'
+            retention = config.get('Rule', {}).get('DefaultRetention', {})
+            detail = None
+            if retention:
+                period = (f"{retention['Days']} days" if retention.get('Days')
+                          else f"{retention.get('Years')} years")
+                detail = f"bucket default: {retention.get('Mode', '').lower()} retention {period}"
+            protection.append({'label': worm, 'status': 'Enabled' if enabled else 'Disabled',
+                               'detail': detail})
+        except ClientError as e:
+            if 'ObjectLockConfigurationNotFound' in e.response.get('Error', {}).get('Code', ''):
+                protection.append({'label': worm, 'status': 'Disabled', 'detail': None})
+            else:
+                protection.append(self._protection_unknown(worm, e))
+        if self.lock:
+            days = [f"{kind} {self.lock[kind + '_days']} days"
+                    for kind in ('db', 'file') if self.lock.get(kind + '_days')]
+            protection.append({'label': 'Upload lock (BACKUP_STORAGE)', 'status': 'Enabled',
+                               'detail': f"{self.lock_mode.lower()} retention: {', '.join(days)}"
+                                         if days else f'{self.lock_mode.lower()} retention'})
+        return protection

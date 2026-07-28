@@ -169,6 +169,12 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
         if info['used'] is not None and info['limit'] is not None:
             gb = 1024 * 1024 * 1024
             html += '<br>{:.1f} GB Used of {:.1f} GB'.format(info['used'] / gb, info['limit'] / gb)
+        badge_colours = {'Enabled': 'success', 'Disabled': 'danger', 'Suspended': 'warning'}
+        for p in db.storage.protection_info():
+            colour = badge_colours.get(p['status'], 'secondary')
+            html += f'<br>{p["label"]} <span class="badge badge-{colour}">{p["status"]}</span>'
+            if p.get('detail'):
+                html += f' <small class="text-muted">{p["detail"]}</small>'
         return self.command_response('html', selector='#storage_info', html=html)
 
     def get_table_query(self, table, **kwargs):

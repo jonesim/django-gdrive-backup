@@ -21,6 +21,7 @@ class BackupInfo(PermissionRequiredMixin, TemplateView):
             'space_used': info['used'] / GB if info['used'] is not None else None,
             'space_available': info['limit'] / GB if info['limit'] is not None else None,
             'supports_trash': db.storage.supports_trash,
+            'protection': db.storage.protection_info(),
             'files': db.get_db_backup_files(),
             'deleted_files': db.get_db_backup_files(deleted=True),
         }

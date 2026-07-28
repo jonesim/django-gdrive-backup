@@ -17,6 +17,9 @@ class AzureStorage(BackupStorage):
     supports_trash = False
 
     def __init__(self, container, connection_string=None, account_url=None, credential=None):
+        self._connection_string = connection_string
+        self._account_url = account_url
+        self._credential = credential
         if connection_string:
             self.container = ContainerClient.from_connection_string(connection_string, container)
         else:
@@ -115,3 +118,59 @@ class AzureStorage(BackupStorage):
         if folder:
             name += f"/{folder['id']}"
         return {'name': name, 'web_link': None, 'used': None, 'limit': None}
+
+    def _service_client(self):
+        from azure.storage.blob import BlobServiceClient
+        if self._connection_string:
+            return BlobServiceClient.from_connection_string(self._connection_string)
+        return BlobServiceClient(self._account_url, credential=self._credential)
+
+    @staticmethod
+    def _protection_unknown(label, error):
+        code = getattr(error, 'error_code', None) or type(error).__name__
+        return {'label': label, 'status': 'Unknown', 'detail': f'could not query ({code})'}
+
+    def protection_info(self):
+        protection = []
+        try:
+            # account-level query - fails with a container-scoped SAS
+            policy = self._service_client().get_service_properties().get('delete_retention_policy')
+            if policy and policy.enabled:
+                protection.append({'label': 'Soft delete', 'status': 'Enabled',
+                                   'detail': f'deleted blobs recoverable for {policy.days} days'})
+            else:
+                protection.append({'label': 'Soft delete', 'status': 'Disabled',
+                                   'detail': 'deleted blobs are gone immediately'})
+        except Exception as e:  # noqa: BLE001 - always render the panel
+            protection.append(self._protection_unknown('Soft delete', e))
+        try:
+            # versioning status is only exposed via the ARM management API, but when it
+            # is enabled every blob carries a version id - check one blob as a proxy
+            first = next(iter(self.container.list_blobs(results_per_page=1)), None)
+            if first is None:
+                protection.append({'label': 'Blob versioning', 'status': 'Unknown',
+                                   'detail': 'no blobs in container to check'})
+            else:
+                version_id = self.container.get_blob_client(first.name).get_blob_properties().version_id
+                protection.append(
+                    {'label': 'Blob versioning', 'status': 'Enabled' if version_id else 'Disabled',
+                     'detail': 'overwritten and deleted blobs are kept as previous versions'
+                               if version_id else None})
+        except Exception as e:  # noqa: BLE001
+            protection.append(self._protection_unknown('Blob versioning', e))
+        try:
+            props = self.container.get_container_properties()
+            worm = getattr(props, 'immutable_storage_with_versioning', None)
+            details = []
+            if getattr(worm, 'enabled', False):
+                details.append('version-level immutability')
+            if getattr(props, 'has_immutability_policy', False):
+                details.append('container immutability policy')
+            if getattr(props, 'has_legal_hold', False):
+                details.append('legal hold')
+            protection.append({'label': 'Immutability (WORM)',
+                               'status': 'Enabled' if details else 'Disabled',
+                               'detail': ', '.join(details) or None})
+        except Exception as e:  # noqa: BLE001
+            protection.append(self._protection_unknown('Immutability (WORM)', e))
+        return protection

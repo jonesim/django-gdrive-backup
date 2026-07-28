@@ -113,6 +113,17 @@ class BackupStorage:
         """
         raise NotImplementedError
 
+    def protection_info(self):
+        """
+        Describe the destination's data-protection configuration (soft delete,
+        versioning, WORM/immutability) for display. Costs a few extra API requests,
+        so only call it for info pages, not during backups.
+        :return: list of {'label': str,
+                          'status': 'Enabled'|'Disabled'|'Suspended'|'Unknown',
+                          'detail': str or None}
+        """
+        return []
+
     @staticmethod
     def md5sum(filename, block_size=65536):
         file_hash = hashlib.md5()
