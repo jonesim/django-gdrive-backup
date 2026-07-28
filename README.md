@@ -57,6 +57,59 @@ settings.py
 
     BACKUP_GDRIVE_DIR = 'django_backup'
 
+**Choosing a backup destination**
+
+Google Drive is the default destination and needs no extra settings beyond those above.
+Backups can instead be stored on any S3-compatible service or Azure Blob Storage by adding
+a `BACKUP_STORAGE` dict to settings.py. The optional `root` key replaces `BACKUP_GDRIVE_DIR`
+as the top-level folder/prefix.
+
+AWS S3:
+
+    BACKUP_STORAGE = {
+        'backend': 's3',
+        'bucket': 'my-backups',
+        'access_key_id': '...',
+        'secret_key': '...',
+        'root': 'django_backup',
+    }
+
+Backblaze B2 (the S3 endpoint is discovered from the key automatically):
+
+    BACKUP_STORAGE = {
+        'backend': 's3',
+        'b2': True,
+        'bucket': 'my-backups',
+        'access_key_id': '...',       # B2 keyID
+        'secret_key': '...',          # B2 applicationKey
+    }
+
+Cloudflare R2:
+
+    BACKUP_STORAGE = {
+        'backend': 's3',
+        'bucket': 'my-backups',
+        'endpoint_url': 'https://<account-id>.r2.cloudflarestorage.com',
+        'region': 'auto',
+        'access_key_id': '...',
+        'secret_key': '...',
+    }
+
+Azure Blob Storage:
+
+    BACKUP_STORAGE = {
+        'backend': 'azure',
+        'container': 'backups',
+        'connection_string': '...',   # or account_url + credential
+    }
+
+S3 backends require `pip install django-gdrive-backup[s3]` and Azure
+`pip install django-gdrive-backup[azure]`.
+
+Note that unlike Google Drive, S3 and Azure destinations have no trash - pruned
+database backups are deleted permanently, so consider enabling bucket versioning
+(S3/B2/R2 lifecycle rules) or soft delete (Azure) if you want a safety net.
+
 
 **Management commands**
 

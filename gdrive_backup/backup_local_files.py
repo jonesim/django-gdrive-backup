@@ -4,30 +4,34 @@ from .base_backup import BaseBackup
 
 class BackupLocal(BaseBackup):
 
-    def backup_to_drive(self, source_dir, google_drive_dir):
-        self.logger.info(f'Backing up {source_dir} to {google_drive_dir}')
-        gdrive_backup_dir = self.drive.find_create_folder(google_drive_dir, folder=self.base_backup_dir)
-        file_hashes = self.get_file_hashes(gdrive_backup_dir)
+    def backup_folder(self, source_dir, backup_dir):
+        self.logger.info(f'Backing up {source_dir} to {backup_dir}')
+        storage_dir = self.storage.ensure_folder(backup_dir, parent=self.base_backup_dir)
+        file_hashes = self.get_file_hashes(storage_dir)
         for f in os.listdir(source_dir):
             full_filename = os.path.join(source_dir, f)
             if os.path.isfile(full_filename):
-                if self.md5sum(full_filename) not in file_hashes.get(full_filename, []):
+                md5 = self.md5sum(full_filename)
+                # older Google Drive backups were stored under the full local path,
+                # so check that name as well to avoid re-uploading them all
+                if md5 not in file_hashes.get(f, []) + file_hashes.get(full_filename, []):
                     self.logger.info('Backup - ' + f)
                     with open(full_filename, 'rb') as backup_stream:
-                        self.drive.create_file_stream(full_filename, gdrive_backup_dir, backup_stream)
+                        self.storage.upload(storage_dir, f, backup_stream, metadata={'md5': md5})
                 else:
                     self.logger.info('    Exists - ' + f)
             elif os.path.isdir(full_filename):
-                self.backup_to_drive(full_filename, google_drive_dir + '/' + f)
+                self.backup_folder(full_filename, backup_dir + '/' + f)
 
-    def restore_gdrive_folder(self, g_drive_folder_name, destination_root):
-        folder_id = self.drive.get_folder(g_drive_folder_name, folder=self.base_backup_dir)
-        files = self.drive.file_list(q=self.drive.build_q(folder=folder_id))
-        folder = f'{destination_root}/{g_drive_folder_name}'
-        if not os.path.exists(folder):
-            os.mkdir(folder)
-        for f in files:
-            if f.get('mimeType') == 'application/vnd.google-apps.folder':
-                self.restore_gdrive_folder(f'{g_drive_folder_name}/{f["name"]}', destination_root)
-            else:
-                self.drive.get_file_contents(file_id=f['id'], local_folder=folder)
+    # previous name, kept for compatibility
+    backup_to_drive = backup_folder
+
+    def restore_folder(self, folder_name, destination_root):
+        folder = self.storage.get_folder(folder_name, parent=self.base_backup_dir)
+        for path, stored_file in self.storage.walk(folder):
+            local_folder = os.path.join(destination_root, folder_name, path)
+            os.makedirs(local_folder, exist_ok=True)
+            self.storage.download(stored_file, local_folder=local_folder)
+
+    # previous name, kept for compatibility
+    restore_gdrive_folder = restore_folder

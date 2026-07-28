@@ -20,8 +20,7 @@ def backup_all_schemas():
 
 @shared_task
 def empty_trash():
-    db = Backup().get_backup_db()
-    db.drive.service.files().emptyTrash().execute()
+    Backup().storage.empty_trash()
 
 
 class StateLogger:
@@ -49,7 +48,7 @@ try:
             with connection.cursor() as cursor:
                 cursor.execute(f'DROP SCHEMA {slug.get("drop_schema")} CASCADE')
                 cursor.execute(f'CREATE SCHEMA {slug.get("drop_schema")}')
-        Backup(StateLogger(self)).get_backup_db().restore_gdrive_db(file_id=slug['pk'])
+        Backup(StateLogger(self)).get_backup_db().restore_db_from_storage(file_id=slug['pk'])
         return {'commands': [ajax_command('message', text='Restore Complete'), ajax_command('reload')]}
 
 except ModuleNotFoundError:

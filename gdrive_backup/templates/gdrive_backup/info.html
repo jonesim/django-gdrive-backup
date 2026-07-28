@@ -71,16 +71,26 @@
     <br>
     <table>
         <tr>
-            <td><b>Google Drive Folder</b></td>
-            <td><a class="btn" target="_blank" href="{{ webViewLink }}">{{ name }}</a>
+            <td><b>Backup Folder</b></td>
+            <td>
+                {% if web_link %}
+                    <a class="btn" target="_blank" href="{{ web_link }}">{{ name }}</a>
+                {% else %}
+                    {{ name }}
+                {% endif %}
             </td>
         </tr>
         <tr>
-            <td>{{ space_used|floatformat }} GB used of {{ space_available|floatformat }} GB</td>
+            <td>
+                {% if space_used is not None %}
+                    {{ space_used|floatformat }} GB used of {{ space_available|floatformat }} GB
+                {% endif %}
+            </td>
             <td>
                 <buton class="btn" onclick="backup_now()">BACKUP NOW</buton>
             </td>
         </tr>
+        {% if supports_trash %}
         <tr>
             <td>
             </td>
@@ -88,6 +98,7 @@
                 <buton class="btn btn-warning" onclick="empty_trash()">EMPTY TRASH</buton>
             </td>
         </tr>
+        {% endif %}
     </table>
     <br>
     <br>
@@ -101,7 +112,7 @@
                     {{ f.name }}
                 </td>
                 <td>
-                    {{ f.modifiedTime|date:"D d M Y  h:i" }}
+                    {{ f.modified|date:"D d M Y  h:i" }}
                 </td>
                 <td>
                     {{ f.size }}
@@ -110,11 +121,12 @@
                     {{ f.id }}
                 </td>
                 <td>
-                    {{ f.md5Checksum }}
+                    {{ f.hash }}
                 </td>
             </tr>
         {% endfor %}
     </table>
+    {% if supports_trash %}
     <br>
     <br>
     <b>Deleted Files</b>
@@ -127,7 +139,7 @@
                     {{ f.name }}
                 </td>
                 <td>
-                    {{ f.modifiedTime|date:"D d M Y  h:i" }}
+                    {{ f.modified|date:"D d M Y  h:i" }}
                 </td>
                 <td>
                     {{ f.size }}
@@ -136,11 +148,12 @@
                     {{ f.id }}
                 </td>
                 <td>
-                    {{ f.md5Checksum }}
+                    {{ f.hash }}
                 </td>
             </tr>
         {% endfor %}
     </table>
+    {% endif %}
 </div>
 </body>
 </html>

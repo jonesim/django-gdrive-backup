@@ -34,24 +34,27 @@ class DatabaseBackupError(Exception):
     pass
 
 
+DB_FILE_EXTENSIONS = ('.' + DUMP_EXTENSION, '.bz2', '.gz', '.sql')
+
+
 class BackupDb(BaseBackup):
 
-    def __init__(self, google_credentials, google_backup_dir, database, local_backup_dir, logger, schema=None,
+    def __init__(self, storage, backup_dir, database, local_backup_dir, logger, schema=None,
                  table=None, exclude_tables=None, exclude_table_data=None):
-        super().__init__(google_credentials, google_backup_dir, logger)
+        super().__init__(storage, backup_dir, logger)
         self.postgres_backup = PostgresBackup(database, self.logger, schema, table,
                                               exclude_tables=exclude_tables,
                                               exclude_table_data=exclude_table_data)
         self.local_backup_dir = local_backup_dir
 
-    def backup_db_gdrive(self):
-        app_properties = {'ip_address': get_ip_address()}
+    def backup_db_to_storage(self):
+        metadata = {'ip_address': get_ip_address()}
         if self.postgres_backup.table:
-            app_properties['schema'] = self.postgres_backup.schema
-            app_properties['table'] = self.postgres_backup.table
+            metadata['schema'] = self.postgres_backup.schema
+            metadata['table'] = self.postgres_backup.table
             filename = f'table_{self.postgres_backup.table}'
         elif self.postgres_backup.schema:
-            app_properties['schema'] = self.postgres_backup.schema
+            metadata['schema'] = self.postgres_backup.schema
             filename = f'schema_{self.postgres_backup.schema}'
         else:
             filename = 'db'
@@ -64,28 +67,40 @@ class BackupDb(BaseBackup):
         backup_filename = None
         try:
             backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
-            self.logger.info('Copying backup to Google Drive')
+            # stored alongside the file so destinations without a server-side md5
+            # (multipart S3, Azure) can still deduplicate and verify
+            metadata['md5'] = self.md5sum(backup_filename)
+            self.logger.info('Copying backup to storage')
             with open(backup_filename, 'rb') as compressed_file:
-                google_file = self.drive.create_file_stream(filename, self.base_backup_dir, compressed_file,
-                                                            body={'appProperties': app_properties})
-            if not self.check_upload(google_file, backup_filename):
+                stored_file = self.storage.upload(self.base_backup_dir, filename, compressed_file,
+                                                  metadata=metadata)
+            if not self.check_upload(stored_file, backup_filename):
                 raise DatabaseUploadError
         finally:
             if backup_filename and os.path.exists(backup_filename):
                 os.remove(backup_filename)
 
-    def restore_gdrive_db(self, file_id=None, file_name=None):
-        file_info = self.drive.get_file(file_id=file_id)
-        file_name = self.drive.get_file_contents(file_id=file_id, file_name=file_name, folder=self.base_backup_dir,
-                                                 local_folder=self.local_backup_dir)
-        if file_info.get('appProperties', {}).get('table'):
-            delete_table(file_info["appProperties"]["schema"], file_info["appProperties"]["table"])
-        self.postgres_backup.restore_db(os.path.join(self.local_backup_dir, file_name))
+    # previous name, kept for compatibility
+    backup_db_gdrive = backup_db_to_storage
 
-    def get_db_backup_files(self, trashed=False, extra_q=''):
-        return self.drive.file_list(q=f"{self.drive.build_q(trashed=trashed, folder=self.base_backup_dir)}"
-                                    f" and (mimeType contains 'application/x-' or name contains '.dump'){extra_q}",
-                                    orderBy='createdTime desc')
+    def restore_db_from_storage(self, file_id=None, file_name=None):
+        if file_id:
+            file_info = self.storage.get_file(file_id)
+        else:
+            file_info = self.storage.find_file(self.base_backup_dir, file_name)
+        local_name = self.storage.download(file_info, local_folder=self.local_backup_dir)
+        if file_info['metadata'].get('table'):
+            delete_table(file_info['metadata']['schema'], file_info['metadata']['table'])
+        self.postgres_backup.restore_db(os.path.join(self.local_backup_dir, local_name))
+
+    # previous name, kept for compatibility
+    restore_gdrive_db = restore_db_from_storage
+
+    def get_db_backup_files(self, deleted=False, metadata_filter=None):
+        files = self.storage.list_files(self.base_backup_dir, metadata_filter=metadata_filter,
+                                        deleted=deleted, include_metadata=True)
+        return sorted((f for f in files if f['name'].endswith(DB_FILE_EXTENSIONS)),
+                      key=lambda f: f['created'], reverse=True)
 
     def get_latest_db_backup(self):
         files = self.get_db_backup_files()
@@ -93,14 +108,12 @@ class BackupDb(BaseBackup):
             return files[0]
 
     def prune_old_backups(self, recipe):
-        backups = self.get_db_backup_files(extra_q=(f" and appProperties has "
-                                                    f"{{ key='ip_address' and value='{get_ip_address()}'}}"))
-        backup_dict = {b['createdTime']: b for b in backups}
+        backups = self.get_db_backup_files(metadata_filter={'ip_address': get_ip_address()})
+        backup_dict = {b['created']: b for b in backups}
         pb = PruneBackups(backup_dict)
         removal = pb.backups_to_remove(recipe)
         for k in removal:
-            self.drive.service.files().update(fileId=removal[k]['id'], body={'trashed': True},
-                                              supportsAllDrives=True).execute()
+            self.storage.delete(removal[k]['id'])
 
 
 class PostgresBackup:

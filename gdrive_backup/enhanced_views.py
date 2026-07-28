@@ -1,6 +1,7 @@
 import base64
 import datetime
 import json
+from functools import cached_property
 from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
@@ -33,6 +34,10 @@ def restore_table_button(text):
 class TableBackup(AjaxTaskMixin, AjaxHelpers):
 
     tasks = {'backup': ajax_backup}
+
+    @cached_property
+    def backup(self):
+        return Backup()
 
     # noinspection PyUnresolvedReferences
     def set_cell_commands(self, table_id, row_no, html):
@@ -84,7 +89,8 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
                  {'visible': len(self.schemas) > 1}),
                 (f'gdrive_backup:schema_info,{self.schemas[0][0]}', f'View {self.schemas[0][0]}',
                  {'visible': len(self.schemas) == 1}),
-                ('gdrive_backup:confirm_empty_trash', 'Empty Trash', {'css_classes': 'btn btn-warning'}),
+                ('gdrive_backup:confirm_empty_trash', 'Empty Trash',
+                 {'css_classes': 'btn btn-warning', 'visible': self.backup.storage.supports_trash}),
                 ('gdrive_backup:confirm_drop_schema,-', 'Drop Public Schema',
                  {'css_classes': 'btn btn-danger', 'visible': allowed_to_restore()}),
             )
@@ -97,19 +103,20 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
 
     def add_tables(self):
         self.add_table('files')
-        self.add_table('deleted_files')
+        if self.backup.storage.supports_trash:
+            self.add_table('deleted_files')
         if not self.schema and len(self.schemas) > 1:
             self.add_table('schemas')
 
     @staticmethod
     def setup_files(table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
-                          DateTimeColumn(title='Backup Date', field='createdTime'),
+                          DateTimeColumn(title='Backup Date', field='created'),
                           DatatableColumn(column_name='drop_restore', enabled=allowed_to_restore(),
                                           render=[row_button('drop_restore', 'Drop Restore',
                                                              button_classes='btn btn-warning btn-sm',)]),
                           restore_table_button('Restore DB'))
-        table.sort('-createdTime')
+        table.sort('-created')
         table.table_options['stateSave'] = False
 
     @ConfirmAjaxMethod(message='This will overwrite the current database and data could be lost')
@@ -121,16 +128,15 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
 
     @staticmethod
     def setup_deleted_files(table):
-        table.add_columns('.id', 'name', 'size', DateTimeColumn(title='Backup Date', field='createdTime'),
+        table.add_columns('.id', 'name', 'size', DateTimeColumn(title='Backup Date', field='created'),
                           DatatableColumn(column_name='Undelete', render=[row_button(
                               'undelete', 'Undelete', button_classes='btn btn-secondary btn-sm'
                           )]))
-        table.sort('-createdTime')
+        table.sort('-created')
         table.table_options['stateSave'] = False
 
     def row_undelete(self, row_no, **_kwargs):
-        db = Backup().get_backup_db()
-        db.drive.service.files().update(fileId=row_no[1:], body={'trashed': False}).execute()
+        self.backup.storage.restore_deleted(row_no[1:])
         return self.command_response('reload')
 
     def setup_schemas(self, table):
@@ -155,24 +161,22 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
         return context
 
     def ajax_read_storage_info(self, **_kwargs):
-        db = Backup().get_backup_db(schema=self.schema)
-        meta = db.base_backup_dir
-        folder_button = '<a target="_blank" href="{}">{}</a>'.format(meta['webViewLink'], meta['name'])
-        about = db.drive.service.about().get(fields='*').execute()
-        return self.command_response(
-            'html',
-            selector='#storage_info',
-            html="Google Drive Folder {}<br>{:.1f} GB Used of {:.1f} GB".format(
-                folder_button,
-                int(about['storageQuota']['usage']) / (1024*1024*1024),
-                int(about['storageQuota']['limit']) / (1024*1024*1024)
-            )
-        )
+        db = self.backup.get_backup_db(schema=self.schema)
+        info = db.storage.storage_info(db.base_backup_dir)
+        if info['web_link']:
+            location = '<a target="_blank" href="{}">{}</a>'.format(info['web_link'], info['name'])
+        else:
+            location = info['name']
+        html = f'Backup Folder {location}'
+        if info['used'] is not None and info['limit'] is not None:
+            gb = 1024 * 1024 * 1024
+            html += '<br>{:.1f} GB Used of {:.1f} GB'.format(info['used'] / gb, info['limit'] / gb)
+        return self.command_response('html', selector='#storage_info', html=html)
 
     def get_table_query(self, table, **kwargs):
-        trashed = {} if table.table_id == 'files' else {'trashed': True}
-        files = Backup().get_backup_db(schema=self.schema).get_db_backup_files(**trashed)
-        return [dict(**f, **f.get('appProperties', {})) for f in files if not f.get('appProperties', {}).get('table')]
+        files = self.backup.get_backup_db(schema=self.schema).get_db_backup_files(
+            deleted=table.table_id != 'files')
+        return [dict(**f, **f.get('metadata', {})) for f in files if not f.get('metadata', {}).get('table')]
 
 
 class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxHelpers, MenuMixin, DatatableView):
@@ -194,9 +198,9 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
     @staticmethod
     def setup_files(table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
-                          DateTimeColumn(title='Backup Date', field='createdTime'),
+                          DateTimeColumn(title='Backup Date', field='created'),
                           restore_table_button('Restore Table'))
-        table.sort('-createdTime')
+        table.sort('-created')
         table.table_options['stateSave'] = False
 
     def row_download_xls(self,  **kwargs):
@@ -228,5 +232,5 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
         table.table_options['stateSave'] = False
 
     def get_table_query(self, table, **kwargs):
-        files = Backup().get_backup_db(schema=self.kwargs.get('schema')).get_db_backup_files()
-        return [dict(**f, **f['appProperties']) for f in files if f.get('appProperties', {}).get('table')]
+        files = self.backup.get_backup_db(schema=self.kwargs.get('schema')).get_db_backup_files()
+        return [dict(**f, **f['metadata']) for f in files if f.get('metadata', {}).get('table')]

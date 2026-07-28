@@ -1,10 +1,10 @@
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.views.generic import TemplateView
 from django.shortcuts import redirect
-from encrypted_credentials import django_credentials
-from google_client.drive import GoogleDrive
 from .tasks import backup
 from .backup import Backup
+
+GB = 1024 * 1024 * 1024
 
 
 class BackupInfo(PermissionRequiredMixin, TemplateView):
@@ -14,13 +14,16 @@ class BackupInfo(PermissionRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         db = Backup().get_backup_db()
-        about = (db.drive.service.about().get(fields='*').execute())
-        meta = db.base_backup_dir
-        meta['space_used'] = int(about['storageQuota']['usage']) / (1024*1024*1024)
-        meta['space_available'] = int(about['storageQuota']['limit']) / (1024*1024*1024)
-        meta['files'] = db.get_db_backup_files()
-        meta['deleted_files'] = db.get_db_backup_files(trashed=True)
-        return meta
+        info = db.storage.storage_info(db.base_backup_dir)
+        return {
+            'name': info['name'],
+            'web_link': info['web_link'],
+            'space_used': info['used'] / GB if info['used'] is not None else None,
+            'space_available': info['limit'] / GB if info['limit'] is not None else None,
+            'supports_trash': db.storage.supports_trash,
+            'files': db.get_db_backup_files(),
+            'deleted_files': db.get_db_backup_files(deleted=True),
+        }
 
 
 class BackupView(PermissionRequiredMixin, TemplateView):
@@ -35,6 +38,5 @@ class EmptyTrashView(PermissionRequiredMixin, TemplateView):
     permission_required = 'access_admin'
 
     def get(self, request, *args, **kwargs):
-        drive = GoogleDrive(django_credentials.get_credentials('drive'))
-        drive.service.files().emptyTrash().execute()
+        Backup().storage.empty_trash()
         return redirect('backup-info')

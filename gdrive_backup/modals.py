@@ -65,8 +65,7 @@ class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
         return 'Are you sure you want to permanently remove deleted items?'
 
     def button_empty_trash(self, **_kwargs):
-        db = Backup().get_backup_db()
-        db.drive.service.files().emptyTrash().execute()
+        Backup().storage.empty_trash()
         return self.command_response('reload')
 
     def get_modal_buttons(self):
