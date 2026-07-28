@@ -108,7 +108,79 @@ S3 backends require `pip install django-gdrive-backup[s3]` and Azure
 
 Note that unlike Google Drive, S3 and Azure destinations have no trash - pruned
 database backups are deleted permanently, so consider enabling bucket versioning
-(S3/B2/R2 lifecycle rules) or soft delete (Azure) if you want a safety net.
+(S3/B2/R2 lifecycle rules) or soft delete (Azure) if you want a safety net. The
+backup page queries the destination and shows whether versioning, soft delete and
+Object Lock/immutability (WORM) are actually enabled, so a missing safety net is
+visible at a glance.
+
+**Ransomware protection**
+
+If backups re-sync whenever a source file changes, an attacker encrypting your files
+would overwrite the good backups on the next scheduled run. Protection is layered:
+
+*Changed-file handling* - settings.py:
+
+    BACKUP_CHANGED_FILES = 'overwrite'   # default: re-upload changed files
+    BACKUP_CHANGED_FILES = 'protect'     # never touch the existing backup: skip the
+                                         # file, log a warning and fail the backup run
+                                         # (raises ChangedFilesError after everything
+                                         # else has completed, so monitoring alerts)
+    BACKUP_CHANGED_FILES = 'history'     # keep the previous version (S3 server-side
+                                         # copy named <file>.<timestamp>, Azure
+                                         # snapshot, Google Drive rename), then upload
+                                         # the new version; warns but succeeds
+
+Use `'protect'` when your file store is immutable (e.g. UUID-named uploads that are
+never edited) - any change is corruption or an attacker. Use `'history'` when changes
+can be legitimate but you still want every previous version recoverable.
+
+*Object Lock retention (S3 and B2)* - create the bucket with Object Lock enabled and
+add a `lock` section to `BACKUP_STORAGE`:
+
+    BACKUP_STORAGE = {
+        'backend': 's3', ...,
+        'lock': {
+            'mode': 'COMPLIANCE',   # not even the bucket owner can shorten or delete
+            'db_days': 35,          # each database dump is locked for 35 days at upload
+            'file_days': 7,         # each file backup is locked for 7 days at upload
+            'min_days': 7,          # extend_retention keeps every file locked >= 7 days ahead
+        },
+    }
+
+Locking at upload costs nothing (extra headers on the existing request). To keep
+long-lived file backups permanently locked, schedule the top-up task daily - it
+extends any object whose remaining lock is below `min_days`:
+
+    CELERY_BEAT_SCHEDULE = {
+        'extend_retention': {
+            'task': 'gdrive_backup.tasks.extend_retention',
+            'schedule': crontab(hour=3, minute=0),
+        },
+    }
+
+or run `python manage.py backup_website --extend_retention`. The top-up costs 1-2 API
+calls per file (roughly a minute per 10,000 files), which is why it is a scheduled
+task rather than part of every backup. Backups only become deletable `min_days` after
+the top-up task stops running.
+
+Pruning still works on a locked bucket: Object Lock buckets are versioned, so deleting
+an old dump just writes a delete marker (allowed even while versions are locked) and
+the locked versions physically remain. Add a bucket lifecycle rule such as "expire
+noncurrent versions after 40 days" to clean them up once their lock has passed. The
+same versioning means even `'overwrite'` mode cannot physically destroy data on a
+locked bucket - the prior locked version survives underneath.
+
+*Credential and bucket hardening* (outside this package):
+
+- **AWS S3**: give the backup IAM user no `s3:DeleteObject`/`s3:PutBucketLifecycle`;
+  prune via lifecycle rules instead of `BACKUP_DB_RETENTION`
+- **Backblaze B2**: use an application key without the `deleteFiles` capability
+- **Azure**: enable blob soft delete or a container immutability policy
+- **Google Drive**: deletes go to trash and are recoverable, but the service account
+  can empty the trash - treat the credential file accordingly
+
+With delete-less credentials, pruning logs a warning instead of failing the backup;
+leave `BACKUP_DB_RETENTION` unset and let bucket lifecycle rules do the pruning.
 
 
 **Management commands**

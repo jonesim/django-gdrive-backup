@@ -1,5 +1,25 @@
 import hashlib
 
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+
+CHANGED_OVERWRITE = 'overwrite'
+CHANGED_PROTECT = 'protect'
+CHANGED_HISTORY = 'history'
+
+
+def changed_files_mode():
+    """How to handle a source file whose contents no longer match its backup:
+    'overwrite' re-uploads it (original behaviour), 'protect' never touches the
+    existing backup (skip, warn and fail the run - for immutable file stores where a
+    change means corruption or ransomware), 'history' preserves the old version then
+    uploads the new one."""
+    mode = getattr(settings, 'BACKUP_CHANGED_FILES', CHANGED_OVERWRITE)
+    if mode not in (CHANGED_OVERWRITE, CHANGED_PROTECT, CHANGED_HISTORY):
+        raise ImproperlyConfigured(f'BACKUP_CHANGED_FILES must be one of '
+                                   f'{CHANGED_OVERWRITE!r}, {CHANGED_PROTECT!r}, {CHANGED_HISTORY!r}')
+    return mode
+
 
 class BaseBackup:
 
@@ -17,6 +37,16 @@ class BaseBackup:
     def get_hash(f):
         return f.get('hash')
 
+    def get_files_by_name(self, directory, include_metadata=False):
+        """
+        :param directory: folder path string or a folder handle from the storage
+        :return: {file name: [file dicts]} for the files already in the backup
+        """
+        files_by_name = {}
+        for f in self.get_existing_backup_files(directory, include_metadata=include_metadata):
+            files_by_name.setdefault(f['name'], []).append(f)
+        return files_by_name
+
     def get_file_hashes(self, directory, get_hash=None, include_metadata=False):
         """
         :param directory: folder path string or a folder handle from the storage
@@ -25,11 +55,8 @@ class BaseBackup:
         """
         if get_hash is None:
             get_hash = self.get_hash
-        files = self.get_existing_backup_files(directory, include_metadata=include_metadata)
-        file_hashes = {}
-        for f in files:
-            file_hashes.setdefault(f['name'], []).append(get_hash(f))
-        return file_hashes
+        return {name: [get_hash(f) for f in files]
+                for name, files in self.get_files_by_name(directory, include_metadata).items()}
 
     @staticmethod
     def md5sum(filename, block_size=65536):

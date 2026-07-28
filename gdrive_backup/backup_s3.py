@@ -1,7 +1,7 @@
 import io
 import boto3
 import hashlib
-from .base_backup import BaseBackup
+from .base_backup import BaseBackup, CHANGED_HISTORY, CHANGED_PROTECT, changed_files_mode
 
 
 class S3File(io.RawIOBase):
@@ -62,29 +62,38 @@ class S3File(io.RawIOBase):
 
 class BackupFolders:
     """
-    Keeps a dictionary of destination folder handles along with file S3 ETag hashes
+    Keeps a dictionary of destination folder handles along with the files already
+    backed up into them (whose metadata holds the source S3 ETag)
     """
 
     def __init__(self, backup, base_folder):
         self.base_folder = base_folder
         self.backup = backup
         self.folders = \
-            {'/': {'hashes': backup.get_file_hashes(base_folder),
+            {'/': {'files': backup.get_files_by_name(base_folder, include_metadata=True),
                    'folder': backup.storage.ensure_folder(base_folder, parent=backup.base_backup_dir)}
              }
 
     def add_folder(self, folder):
         return {
-            'hashes': self.backup.get_file_hashes(self.base_folder + '/' + folder),
+            'files': self.backup.get_files_by_name(self.base_folder + '/' + folder, include_metadata=True),
             'folder': self.backup.storage.ensure_folder(folder, parent=self.folders['/']['folder']),
         }
 
-    def file_exists(self, folder, file, file_hash):
+    def file_status(self, folder, file, file_hash):
+        """'match' - already backed up, 'new' - not in the backup, 'changed' - backed
+        up with different contents"""
         if file == '':
-            return True
+            return 'match'
         if folder not in self.folders:
             self.folders[folder] = self.add_folder(folder)
-        return file_hash in self.folders[folder]['hashes'].get(file, [])
+        existing = self.folders[folder]['files'].get(file)
+        if not existing:
+            return 'new'
+        return 'match' if file_hash in [BackupS3.get_etag(f) for f in existing] else 'changed'
+
+    def existing_file(self, folder, file):
+        return self.folders[folder]['files'][file][0]
 
     def parent(self, folder):
         return self.folders[folder]['folder']
@@ -99,15 +108,13 @@ class BackupS3(BaseBackup):
     def __init__(self, access_key_id, access_key, storage, backup_dir, logger):
         super().__init__(storage, backup_dir, logger)
         self.s3 = boto3.resource('s3',  aws_access_key_id=access_key_id,  aws_secret_access_key=access_key)
+        self.changed_files = []
 
     @staticmethod
     def get_etag(f):
         metadata = f.get('metadata', {})
         # S3-compatible destinations return metadata keys lower-cased
         return metadata.get('ETag', metadata.get('etag'))
-
-    def get_file_hashes(self, directory, get_hash=None, include_metadata=True):
-        return super().get_file_hashes(directory, get_hash or self.get_etag, include_metadata=True)
 
     def backup(self, bucket_name, prefix, destination):
         """ Backup from a S3 prefix (folder) to the backup storage
@@ -117,6 +124,8 @@ class BackupS3(BaseBackup):
         :return:
         """
 
+        mode = changed_files_mode()
+        lock_days = self.storage.lock_days('file')
         folders = BackupFolders(self, destination)
         bucket = self.s3.Bucket(name=bucket_name)
         for f in bucket.objects.filter(Prefix=prefix):
@@ -124,10 +133,20 @@ class BackupS3(BaseBackup):
             path = f.key[len(prefix) + 1:-1*(len(filename) + 1)]
             if path == '':
                 path = '/'
-            if not folders.file_exists(path, filename, f.e_tag):
-                self.logger.info(f'Backing up {f.key}')
-                s3_file = S3File(self.s3.Object(bucket_name, f.key))
-                self.storage.upload(folders.parent(path), filename, s3_file,
-                                    metadata={'ETag': f.e_tag})
-            else:
+            status = folders.file_status(path, filename, f.e_tag)
+            if status == 'match':
                 self.logger.info(f'found {f.key}')
+                continue
+            if status == 'changed':
+                if mode == CHANGED_PROTECT:
+                    self.changed_files.append(f.key)
+                    self.logger.warning(f'NOT backing up {f.key} - it no longer matches its existing backup')
+                    continue
+                if mode == CHANGED_HISTORY:
+                    self.changed_files.append(f.key)
+                    self.logger.warning(f'{f.key} changed - keeping the previous backup version')
+                    self.storage.keep_version(folders.existing_file(path, filename), lock_days=lock_days)
+            self.logger.info(f'Backing up {f.key}')
+            s3_file = S3File(self.s3.Object(bucket_name, f.key))
+            self.storage.upload(folders.parent(path), filename, s3_file,
+                                metadata={'ETag': f.e_tag}, lock_days=lock_days)

@@ -36,9 +36,18 @@ class StateLogger:
     def __init__(self, task):
         self.task = task
 
-    def info(self, text):
-        logger.info(text)
+    def _log(self, log, text):
+        log(text)
         self.task.update_state(state='PROGRESS', meta={'message': text})
+
+    def info(self, text):
+        self._log(logger.info, text)
+
+    def warning(self, text):
+        self._log(logger.warning, text)
+
+    def error(self, text):
+        self._log(logger.error, text)
 
 
 try:

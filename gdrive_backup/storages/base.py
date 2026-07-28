@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 
 
@@ -67,6 +68,18 @@ class BackupStorage:
         lock_days applies object-lock retention where the backend supports it and is
         ignored otherwise."""
         raise NotImplementedError
+
+    def keep_version(self, stored_file, lock_days=None):
+        """Preserve the current contents of a stored file so that an upload under the
+        same name cannot destroy it. Backends use their cheapest native mechanism
+        (server-side copy, snapshot or rename) - no data is re-transferred and no
+        delete permission is needed. Returns a reference to the preserved copy where
+        the backend has one."""
+        raise NotImplementedError('This storage backend cannot keep file versions')
+
+    @staticmethod
+    def version_name(name):
+        return f'{name}.{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}'
 
     def extend_retention(self, folder, min_days, workers=8):
         """Ensure every file under folder keeps at least min_days of object-lock

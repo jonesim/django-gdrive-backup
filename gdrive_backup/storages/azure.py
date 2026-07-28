@@ -84,6 +84,11 @@ class AzureStorage(BackupStorage):
                                                         validate_content=True)
         return self.get_file(key)
 
+    def keep_version(self, stored_file, lock_days=None):
+        # snapshots are Azure's cheap native versioning; the overwrite that follows
+        # leaves the snapshot intact
+        return self.container.get_blob_client(stored_file['id']).create_snapshot()
+
     def verify_upload(self, stored_file, local_path):
         saved = self.get_file(stored_file['id'])
         if saved['size'] != os.path.getsize(local_path):

@@ -93,6 +93,14 @@ class GDriveStorage(BackupStorage):
         google_file = self.drive.create_file_stream(name, folder['drive_folder'], stream, body=body)
         return self.get_file(google_file['id'])
 
+    def keep_version(self, stored_file, lock_days=None):
+        # a metadata-only rename preserves the existing file (no data transfer); the
+        # upload that follows recreates the canonical name
+        new_name = self.version_name(stored_file['name'])
+        self.drive.service.files().update(fileId=stored_file['id'], body={'name': new_name},
+                                          supportsAllDrives=True).execute()
+        return new_name
+
     def verify_upload(self, stored_file, local_path):
         saved_file = self.drive.service.files().get(fileId=stored_file['id'], fields='size, md5Checksum',
                                                     supportsAllDrives=True).execute()

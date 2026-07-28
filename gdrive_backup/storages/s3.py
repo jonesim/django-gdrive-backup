@@ -142,6 +142,14 @@ class S3Storage(BackupStorage):
                                Config=self.transfer_config)
         return self.get_file(key)
 
+    def keep_version(self, stored_file, lock_days=None):
+        # server-side managed copy (handles > 5GB multipart) - no data transfer or
+        # delete permission needed, and the copy gets its own object lock
+        version_key = self.version_name(stored_file['id'])
+        self.s3.copy({'Bucket': self.bucket, 'Key': stored_file['id']}, self.bucket, version_key,
+                     ExtraArgs=self._lock_args(lock_days) or None, Config=self.transfer_config)
+        return version_key
+
     def extend_retention(self, folder, min_days, workers=8):
         """Ensure every object under folder keeps at least min_days of object-lock
         retention. Extending retention is always allowed; shortening never is, so this

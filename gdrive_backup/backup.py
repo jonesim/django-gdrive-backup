@@ -4,6 +4,7 @@ from tempfile import gettempdir
 from django.conf import settings
 from .backup_db import BackupDb
 from .backup_local_files import BackupLocal
+from .base_backup import CHANGED_PROTECT, changed_files_mode
 from .sql_functions import get_schemas
 from .storages import get_storage, backup_root
 
@@ -12,6 +13,12 @@ try:
 except ImportError:
     # Allow for not using S3 and not installing boto3
     BackupS3 = None
+
+
+class ChangedFilesError(Exception):
+    """Source files no longer match their existing backups while
+    BACKUP_CHANGED_FILES = 'protect' - possible ransomware or corruption. The rest of
+    the backup completed before this was raised."""
 
 
 class Backup:
@@ -44,6 +51,7 @@ class Backup:
 
     def backup_db_and_folders(self, schema=None, table=None, include_db=True, all_schemas=False,
                               include_folders=True, include_s3_folders=True, sub_folder=None):
+        changed_files = []
         if include_db:
             schemas = [s[0] for s in get_schemas()] if all_schemas else [schema]
             for s in schemas:
@@ -58,6 +66,7 @@ class Backup:
             b = BackupLocal(self.storage, backup_root(), self.logger)
             for backup in settings.BACKUP_DIRS:
                 b.backup_folder(*backup)
+            changed_files += b.changed_files
 
         if include_s3_folders and hasattr(settings, 'S3_BACKUP_DIRS'):
             s3_backup = BackupS3(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY,
@@ -66,6 +75,16 @@ class Backup:
                                  self.logger)
             for s3 in settings.S3_BACKUP_DIRS:
                 s3_backup.backup(settings.AWS_PRIVATE_STORAGE_BUCKET_NAME, *s3)
+            changed_files += s3_backup.changed_files
+
+        if changed_files:
+            summary = ', '.join(changed_files[:5]) + ('...' if len(changed_files) > 5 else '')
+            self.logger.warning(f'{len(changed_files)} source files changed since being backed up: {summary}')
+            if changed_files_mode() == CHANGED_PROTECT:
+                # raised after everything else has completed so the db dump and all
+                # unchanged files are safely backed up before the run is marked failed
+                raise ChangedFilesError(f'{len(changed_files)} source files changed since being backed up '
+                                        f'and were NOT backed up: {summary}')
 
     def extend_file_retention(self, workers=8):
         """Ensure everything under the backup root keeps at least the configured
