@@ -205,6 +205,20 @@ from the following PyPi packages
 
     django-nested-modals, django-filtered-datatables, django-tab-menus, django-ajax-helpers
 
+**Restoring from the management page**
+
+Restore and drop-schema actions on the enhanced management page require
+
+    BACKUP_ALLOW_RESTORE = True
+
+which defaults to the value of `DEBUG`. This is enforced server-side on every
+restore endpoint (not just by hiding the buttons), so a production server with
+`DEBUG = False` and no `BACKUP_ALLOW_RESTORE` setting cannot be restored from
+the web UI even by a superuser. Set `BACKUP_ALLOW_RESTORE = True` on staging and
+development machines where restoring is wanted. The `manage.py restore_db`
+command is not affected by this setting, so disaster recovery on a live server
+remains possible from the command line.
+
 
 **Configure S3 folder backups**
 

@@ -15,7 +15,7 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
         path('<str:schema>/tables/', views.SchemaTableView.as_view(), name='schema_tables'),
         path('modal/backup/<str:slug>/', modals.SuperUserTaskModal.as_view(task=ajax_backup), name='django_backup'),
         path('modal/confim_restore/<str:base64>/', modals.ConfirmRestoreModal.as_view(), name='confirm_restore_db'),
-        path('modal/restore/<str:base64>/', modals.SuperUserTaskModal.as_view(task=ajax_restore), name='restore_db'),
+        path('modal/restore/<str:base64>/', modals.RestoreTaskModal.as_view(task=ajax_restore), name='restore_db'),
         path('modal/confim_backup/<str:slug>/', modals.ConfirmBackupModal.as_view(), name='confirm_backup'),
         path('modal/confirm_empty_trash/', modals.ConfirmEmptyTrashModal.as_view(), name='confirm_empty_trash'),
         path('modal/confirm_drop_schema/<str:slug>/', modals.ConfirmDropSchemaModal.as_view(),

@@ -8,6 +8,7 @@ from django_modals.task_modals import TaskModal
 from ajax_helpers.utils import is_ajax
 
 from gdrive_backup.backup import Backup
+from gdrive_backup.utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 
 class SuperUserMixin(UserPassesTestMixin):
@@ -15,7 +16,16 @@ class SuperUserMixin(UserPassesTestMixin):
         return self.request.user.is_superuser
 
 
-class ConfirmRestoreModal(SuperUserMixin, Modal):
+class RestoreAllowedMixin(SuperUserMixin):
+    """Server-side enforcement of BACKUP_ALLOW_RESTORE — hiding the buttons is not enough."""
+
+    def dispatch(self, request, *args, **kwargs):
+        if not allowed_to_restore():
+            return self.command_response('message', text=RESTORE_BLOCKED_MESSAGE)
+        return super().dispatch(request, *args, **kwargs)
+
+
+class ConfirmRestoreModal(RestoreAllowedMixin, Modal):
 
     modal_title = 'Warning'
 
@@ -57,6 +67,10 @@ class SuperUserTaskModal(SuperUserMixin, TaskModal):
         return super().dispatch(request, *args, **kwargs)
 
 
+class RestoreTaskModal(RestoreAllowedMixin, SuperUserTaskModal):
+    pass
+
+
 class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
 
     modal_title = 'Warning'
@@ -73,7 +87,7 @@ class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
                 modal_button('Cancel', 'close', 'btn-secondary')]
 
 
-class ConfirmDropSchemaModal(SuperUserMixin, Modal):
+class ConfirmDropSchemaModal(RestoreAllowedMixin, Modal):
 
     modal_title = 'Warning'
 

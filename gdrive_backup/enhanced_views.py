@@ -5,7 +5,6 @@ from functools import cached_property
 from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
-from django.conf import settings
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
@@ -19,10 +18,7 @@ from openpyxl import Workbook
 from gdrive_backup.backup import Backup
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
 from .tasks import ajax_backup
-
-
-def allowed_to_restore():
-    return getattr(settings, 'BACKUP_ALLOW_RESTORE', getattr(settings, 'DEBUG', False))
+from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 
 def restore_table_button(text):
@@ -121,6 +117,8 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
 
     @ConfirmAjaxMethod(message='This will overwrite the current database and data could be lost')
     def row_drop_restore(self, row_data, **_kwargs):
+        if not allowed_to_restore():
+            return self.command_response('message', text=RESTORE_BLOCKED_MESSAGE)
         table_row = json.loads(row_data)
         return self.command_response('show_modal',
                                      modal=reverse_modal('gdrive_backup:restore_db'

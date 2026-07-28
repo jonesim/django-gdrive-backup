@@ -1,11 +1,15 @@
 import logging
+import re
 
 from celery import shared_task
 from django.db import connection
 
 from .backup import Backup
+from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 logger = logging.getLogger(__name__)
+
+SCHEMA_NAME_RE = re.compile(r'^[a-z_][a-z0-9_]*$')
 
 
 @shared_task
@@ -61,10 +65,15 @@ try:
 
     @shared_task(bind=True)
     def ajax_restore(self, *, slug, **_kwargs):
-        if slug.get('drop_schema'):
+        if not allowed_to_restore():
+            return {'commands': [ajax_command('message', text=RESTORE_BLOCKED_MESSAGE)]}
+        drop_schema = slug.get('drop_schema')
+        if drop_schema:
+            if not SCHEMA_NAME_RE.match(drop_schema):
+                raise ValueError(f'Invalid schema name for drop_schema: {drop_schema!r}')
             with connection.cursor() as cursor:
-                cursor.execute(f'DROP SCHEMA {slug.get("drop_schema")} CASCADE')
-                cursor.execute(f'CREATE SCHEMA {slug.get("drop_schema")}')
+                cursor.execute(f'DROP SCHEMA "{drop_schema}" CASCADE')
+                cursor.execute(f'CREATE SCHEMA "{drop_schema}"')
         Backup(StateLogger(self)).get_backup_db().restore_db_from_storage(file_id=slug['pk'])
         return {'commands': [ajax_command('message', text='Restore Complete'), ajax_command('reload')]}
 
