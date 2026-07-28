@@ -8,3 +8,5 @@
 /django_examples/.credentials/cred.json
 /CLAUDE.md
 /django_examples/staticfiles/
+__pycache__/
+/django_examples/django_examples/credentials/
