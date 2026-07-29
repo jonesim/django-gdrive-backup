@@ -26,6 +26,7 @@ classifiers = [
 [project.optional-dependencies]
 s3 = ["boto3"]
 azure = ["azure-storage-blob"]
+encryption = ["cryptography"]
 
 [project.urls]
 Homepage = "https://github.com/jonesim/django-gdrive-backup"
