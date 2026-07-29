@@ -94,9 +94,6 @@ class BackupDb(BaseBackup):
                 if temp_file and os.path.exists(temp_file):
                     os.remove(temp_file)
 
-    # previous name, kept for compatibility
-    backup_db_gdrive = backup_db_to_storage
-
     def restore_db_from_storage(self, file_id=None, file_name=None):
         if file_id:
             file_info = self.storage.get_file(file_id)
@@ -106,9 +103,6 @@ class BackupDb(BaseBackup):
         if file_info['metadata'].get('table'):
             delete_table(file_info['metadata']['schema'], file_info['metadata']['table'])
         self.postgres_backup.restore_db(os.path.join(self.local_backup_dir, local_name))
-
-    # previous name, kept for compatibility
-    restore_gdrive_db = restore_db_from_storage
 
     def get_db_backup_files(self, deleted=False, metadata_filter=None):
         files = self.storage.list_files(self.base_backup_dir, metadata_filter=metadata_filter,

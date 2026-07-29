@@ -17,14 +17,14 @@ from django_modals.decorators import ConfirmAjaxMethod
 from django_modals.helper import reverse_modal
 from openpyxl import Workbook
 
-from gdrive_backup.backup import Backup
+from cloud_backup.backup import Backup
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
 from .tasks import ajax_backup
 from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 
 def restore_table_button(text):
-    return ModalLink(row=True, base64=True, modal_name='gdrive_backup:confirm_restore_db',
+    return ModalLink(row=True, base64=True, modal_name='cloud_backup:confirm_restore_db',
                      css_class='btn btn-danger btn-sm', title='Restore', button_text=text,
                      enabled=allowed_to_restore())
 
@@ -70,7 +70,7 @@ class BackupContentMixin:
     embedded in a host project's own branded template. That template must still
     include the ajax_helpers/datatables/modals libs and {{ ajax_helpers_script }}."""
 
-    content_template = 'gdrive_backup/backup_content.html'
+    content_template = 'cloud_backup/backup_content.html'
 
     def render_to_response(self, context, **response_kwargs):
         # with a single table (no trash on S3/Azure, one schema) DatatableView only
@@ -90,23 +90,23 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
         self.add_menu('buttons', menu_type='buttons')
         if self.schema:
             self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(
-                ('gdrive_backup:backup_info', 'backup'),
-                ('gdrive_backup:schema_info', self.schema, {'url_args': [self.schema]}),
+                ('cloud_backup:backup_info', 'backup'),
+                ('cloud_backup:schema_info', self.schema, {'url_args': [self.schema]}),
             )
             self.menus['buttons'].add_items(
-                (f'gdrive_backup:confirm_backup,schema-{self.schema}', f'BACKUP {self.schema}'),
-                ('gdrive_backup:schema_tables', 'View Tables', {'url_args': [self.schema]}),
+                (f'cloud_backup:confirm_backup,schema-{self.schema}', f'BACKUP {self.schema}'),
+                ('cloud_backup:schema_tables', 'View Tables', {'url_args': [self.schema]}),
             )
         else:
             self.menus['buttons'].add_items(
-                ('gdrive_backup:confirm_backup,-', 'Backup database'),
-                ('gdrive_backup:confirm_backup,all_schemas-True', 'Backup All Schemas',
+                ('cloud_backup:confirm_backup,-', 'Backup database'),
+                ('cloud_backup:confirm_backup,all_schemas-True', 'Backup All Schemas',
                  {'visible': len(self.schemas) > 1}),
-                (f'gdrive_backup:schema_info,{self.schemas[0][0]}', f'View {self.schemas[0][0]}',
+                (f'cloud_backup:schema_info,{self.schemas[0][0]}', f'View {self.schemas[0][0]}',
                  {'visible': len(self.schemas) == 1}),
-                ('gdrive_backup:confirm_empty_trash', 'Empty Trash',
+                ('cloud_backup:confirm_empty_trash', 'Empty Trash',
                  {'css_classes': 'btn btn-warning', 'visible': self.backup.storage.supports_trash}),
-                ('gdrive_backup:confirm_drop_schema,-', 'Drop Public Schema',
+                ('cloud_backup:confirm_drop_schema,-', 'Drop Public Schema',
                  {'css_classes': 'btn btn-danger', 'visible': allowed_to_restore()}),
             )
 
@@ -140,7 +140,7 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
             return self.command_response('message', text=RESTORE_BLOCKED_MESSAGE)
         table_row = json.loads(row_data)
         return self.command_response('show_modal',
-                                     modal=reverse_modal('gdrive_backup:restore_db'
+                                     modal=reverse_modal('cloud_backup:restore_db'
                                                          ,base64={'pk': table_row[0], 'drop_schema': 'public'}))
 
     @staticmethod
@@ -160,7 +160,7 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
         table.add_columns(
             'schema', 'size',
             ColumnLink(
-                column_name='view_schema', link_ref_column='schema', url_name='gdrive_backup:schema_info',
+                column_name='view_schema', link_ref_column='schema', url_name='cloud_backup:schema_info',
                 link_html='<button class="btn btn-sm btn-outline-dark">VIEW</button>'
             ),
             ColumnBase(column_name='Backup',
@@ -204,7 +204,7 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
 
 class BackupView(BackupBaseView):
 
-    template_name = 'gdrive_backup/backup.html'
+    template_name = 'cloud_backup/backup.html'
 
 
 class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, MenuMixin, DatatableView):
@@ -213,9 +213,9 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
     def setup_menu(self):
         self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(
-            ('gdrive_backup:backup_info', 'backup'),
-            ('gdrive_backup:schema_info', self.kwargs['schema'], {'url_args': [self.kwargs['schema']]}),
-            ('gdrive_backup:schema_tables', 'tables', {'url_args': [self.kwargs['schema']]}),
+            ('cloud_backup:backup_info', 'backup'),
+            ('cloud_backup:schema_info', self.kwargs['schema'], {'url_args': [self.kwargs['schema']]}),
+            ('cloud_backup:schema_tables', 'tables', {'url_args': [self.kwargs['schema']]}),
         )
 
     def add_tables(self):
@@ -270,4 +270,4 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
 class SchemaTableView(SchemaTableBaseView):
 
-    template_name = 'gdrive_backup/backup.html'
+    template_name = 'cloud_backup/backup.html'

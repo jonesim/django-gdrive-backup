@@ -9,13 +9,13 @@ pass the raw key bytes in.
 Format v1 - chunked AES-256-GCM (the STREAM construction, as used by age/Tink):
 
     Header (28 bytes, also the associated data for every chunk):
-      0-5   magic       b'GDBENC'
+      0-5   magic       b'DCBENC'
       6     version     0x01
       7     flags       0x00 (reserved)
       8-11  chunk_size  uint32 big-endian (writers here use 1 MiB)
       12-27 salt        16 random bytes per file
 
-    file_key = HKDF-SHA256(master_key, salt=salt, info=b'django-gdrive-backup v1')
+    file_key = HKDF-SHA256(master_key, salt=salt, info=b'django-cloud-backup v1')
 
     Body - chunks of chunk_size plaintext (the last carries the remainder):
       nonce (12 bytes) = 11-byte big-endian chunk counter || final flag byte
@@ -37,16 +37,16 @@ from django.core.exceptions import ImproperlyConfigured
 
 from encrypted_credentials.django_credentials import env_key_name
 
-MAGIC = b'GDBENC'
+MAGIC = b'DCBENC'
 VERSION = 1
 FLAGS = 0
 CHUNK_SIZE = 1024 * 1024
 SALT_LEN = 16
 HEADER_LEN = 28
 TAG_LEN = 16
-KEY_INFO = b'django-gdrive-backup v1'
+KEY_INFO = b'django-cloud-backup v1'
 
-INSTALL_HINT = 'pip install django-gdrive-backup[encryption]'
+INSTALL_HINT = 'pip install django-cloud-backup[encryption]'
 
 
 class DecryptionError(Exception):

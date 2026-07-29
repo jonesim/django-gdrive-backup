@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 
-from gdrive_backup.backup import Backup
+from cloud_backup.backup import Backup
 
 
 class Logger:

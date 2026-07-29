@@ -1,7 +1,7 @@
 from django.apps import apps
 from django.urls import path
 
-app_name = 'gdrive_backup'
+app_name = 'cloud_backup'
 
 
 if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'django_menus', 'ajax_helpers']]):
@@ -13,7 +13,7 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
     def backup_urlpatterns(backup_view=None, schema_table_view=None):
         """Full enhanced pattern list with the two page views swappable, so a branded
         subclass keeps the URL names the menus and modals reverse. Host usage:
-        path('backup/', include((backup_urlpatterns(backup_view=MyBackupView), 'gdrive_backup')))"""
+        path('backup/', include((backup_urlpatterns(backup_view=MyBackupView), 'cloud_backup')))"""
         backup_view = backup_view or views.BackupView
         schema_table_view = schema_table_view or views.SchemaTableView
         return [

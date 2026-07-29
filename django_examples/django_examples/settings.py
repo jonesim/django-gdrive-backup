@@ -46,7 +46,7 @@ INSTALLED_APPS = [
     'ajax_helpers',
     'django_menus',
     'show_src_code',
-    'gdrive_backup',
+    'cloud_backup',
     *modal_2fa_apps,
 ]
 
@@ -178,7 +178,7 @@ CREDENTIAL_FILES = {
 from encrypted_credentials.django_credentials import add_encrypted_settings
 
 add_encrypted_settings(globals())
-BACKUP_GDRIVE_DIR = 'test_backup'
+BACKUP_ROOT = 'test_backup'
 BACKUP_ALLOW_RESTORE = True
 BACKUP_DB_RETENTION = [{'hours': 1, 'number': 4},
                        {'hours': 2, 'number': 10},

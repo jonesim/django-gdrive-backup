@@ -64,6 +64,3 @@ class BackupLocal(BaseBackup):
             os.makedirs(local_folder, exist_ok=True)
             local_name = self.storage.download(stored_file, local_folder=local_folder)
             decrypt_in_place(os.path.join(local_folder, local_name), self.encryption_key)
-
-    # previous name, kept for compatibility
-    restore_gdrive_folder = restore_folder

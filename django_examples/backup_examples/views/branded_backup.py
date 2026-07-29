@@ -1,4 +1,4 @@
-from gdrive_backup.enhanced_views import BackupBaseView, SchemaTableBaseView
+from cloud_backup.enhanced_views import BackupBaseView, SchemaTableBaseView
 
 
 class BrandedBackupView(BackupBaseView):

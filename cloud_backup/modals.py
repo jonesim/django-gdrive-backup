@@ -7,8 +7,8 @@ from django_modals.modals import Modal
 from django_modals.task_modals import TaskModal
 from ajax_helpers.utils import is_ajax
 
-from gdrive_backup.backup import Backup
-from gdrive_backup.utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
+from cloud_backup.backup import Backup
+from cloud_backup.utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 
 class SuperUserMixin(UserPassesTestMixin):
@@ -32,7 +32,7 @@ class ConfirmRestoreModal(RestoreAllowedMixin, Modal):
     def get_modal_buttons(self):
         return [
             modal_button('Confirm', ajax_modal_redirect(
-                'gdrive_backup:restore_db', base64={'pk': self.slug['base64'][0]}
+                'cloud_backup:restore_db', base64={'pk': self.slug['base64'][0]}
             ), 'btn-danger'),
             modal_button('Cancel', 'close', 'btn-secondary')
         ]
@@ -47,7 +47,7 @@ class ConfirmBackupModal(SuperUserMixin, Modal):
 
     def get_modal_buttons(self):
         return [
-            modal_button('Yes', ajax_modal_redirect('gdrive_backup:django_backup', slug=self.kwargs['slug']),
+            modal_button('Yes', ajax_modal_redirect('cloud_backup:django_backup', slug=self.kwargs['slug']),
                          'btn-warning'),
             modal_button('Cancel', 'close', 'btn-secondary')
         ]

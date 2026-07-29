@@ -51,12 +51,12 @@
     <script>
         function backup_now() {
             if (confirm('Back up site now?')) {
-                window.location.href = "{% url 'gdrive_backup:backup-now' %}"
+                window.location.href = "{% url 'cloud_backup:backup-now' %}"
             }
         }
         function empty_trash() {
             if (confirm('Empty trash?')) {
-                window.location.href = "{% url 'gdrive_backup:empty-trash' %}"
+                window.location.href = "{% url 'cloud_backup:empty-trash' %}"
             }
         }
     </script>

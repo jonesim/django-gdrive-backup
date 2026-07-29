@@ -52,9 +52,9 @@ class BackupConfig:
         config = config or {}
         self.storage_settings = config.get('storage',
                                            getattr(settings, 'BACKUP_STORAGE', None) or {'backend': 'gdrive'})
-        self.root = self.storage_settings.get('root', getattr(settings, 'BACKUP_GDRIVE_DIR', 'django_backup'))
+        self.root = self.storage_settings.get('root', getattr(settings, 'BACKUP_ROOT', 'django_backup'))
         self.include_db = config.get('db', True)
-        self.db_dir = config.get('db_dir', getattr(settings, 'BACKUP_GDRIVE_DB', self.root + '/db'))
+        self.db_dir = config.get('db_dir', getattr(settings, 'BACKUP_DB_DIR', self.root + '/db'))
         self.dirs = config.get('dirs', getattr(settings, 'BACKUP_DIRS', []))
         self.s3_dirs = config.get('s3_dirs', getattr(settings, 'S3_BACKUP_DIRS', []))
         self.retention = config.get('retention', getattr(settings, 'BACKUP_DB_RETENTION', None))

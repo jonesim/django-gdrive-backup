@@ -1,9 +1,34 @@
-[![PyPI version](https://badge.fury.io/py/django-gdrive-backup.svg)](https://badge.fury.io/py/django-gdrive-backup)
+[![PyPI version](https://badge.fury.io/py/django-cloud-backup.svg)](https://badge.fury.io/py/django-cloud-backup)
 
 
-**django-gdrive-backup** 
+**django-cloud-backup** 
 
-Backs up django postgres databases, local folders and S3 folders to a Google Drive folder through a google service account.
+Backs up django postgres databases, local folders and S3 folders to Google Drive, S3-compatible storage (AWS, Backblaze B2, Cloudflare R2) or Azure Blob Storage.
+
+**Migrating from django-gdrive-backup**
+
+This package was previously published as `django-gdrive-backup`. The rename is a breaking
+release; upgrading requires the following changes in your project:
+
+- Install `django-cloud-backup` (and its extras, e.g. `django-cloud-backup[s3]`) instead of
+  `django-gdrive-backup`
+- `INSTALLED_APPS`: `'gdrive_backup'` → `'cloud_backup'`
+- urls.py: `include('gdrive_backup.urls')` → `include('cloud_backup.urls')`, and any
+  reverses/`{% url %}` tags use the `cloud_backup:` namespace instead of `gdrive_backup:`
+- Celery beat schedules: task names are now `cloud_backup.tasks.*`
+  (e.g. `cloud_backup.tasks.backup`)
+- Settings renamed: `BACKUP_GDRIVE_DIR` → `BACKUP_ROOT`, `BACKUP_GDRIVE_DB` → `BACKUP_DB_DIR`
+  (they apply to every destination backend, not just Google Drive). `BACKUP_TEAM_DRIVE` is
+  unchanged.
+- Removed legacy method aliases `backup_db_gdrive`, `restore_gdrive_db` and
+  `restore_gdrive_folder` - use `backup_db_to_storage`, `restore_db_from_storage` and
+  `restore_folder`
+- Client-side encryption: the file format constants changed with the rename, so files
+  encrypted by pre-release versions of the encryption feature cannot be read. No published
+  release included encryption, so this affects no production backups.
+
+Backups already in your storage destination are unaffected - folder layout and metadata
+are unchanged, and existing backups restore as before.
 
 **encrypted-credentials**
 
@@ -20,12 +45,12 @@ Requires a Google service account with the Google Drive API enabled
 
 https://console.cloud.google.com/apis/credentials/serviceaccountkey
 
-**Add to gdrive_backup installed apps**
+**Add to cloud_backup installed apps**
 
 settings.py
 
     INSTALLED_APPS = [ ..
-            'gdrive_backup',
+            'cloud_backup',
         ]
 
 **Store service account key**
@@ -55,13 +80,13 @@ For docker containers you may need to something similar to the following line in
 
 settings.py
 
-    BACKUP_GDRIVE_DIR = 'django_backup'
+    BACKUP_ROOT = 'django_backup'
 
 **Choosing a backup destination**
 
 Google Drive is the default destination and needs no extra settings beyond those above.
 Backups can instead be stored on any S3-compatible service or Azure Blob Storage by adding
-a `BACKUP_STORAGE` dict to settings.py. The optional `root` key replaces `BACKUP_GDRIVE_DIR`
+a `BACKUP_STORAGE` dict to settings.py. The optional `root` key replaces `BACKUP_ROOT`
 as the top-level folder/prefix.
 
 AWS S3:
@@ -103,8 +128,8 @@ Azure Blob Storage:
         'connection_string': '...',   # or account_url + credential
     }
 
-S3 backends require `pip install django-gdrive-backup[s3]` and Azure
-`pip install django-gdrive-backup[azure]`.
+S3 backends require `pip install django-cloud-backup[s3]` and Azure
+`pip install django-cloud-backup[azure]`.
 
 Note that unlike Google Drive, S3 and Azure destinations have no trash - pruned
 database backups are deleted permanently, so consider enabling bucket versioning
@@ -153,7 +178,7 @@ extends any object whose remaining lock is below `min_days`:
 
     CELERY_BEAT_SCHEDULE = {
         'extend_retention': {
-            'task': 'gdrive_backup.tasks.extend_retention',
+            'task': 'cloud_backup.tasks.extend_retention',
             'schedule': crontab(hour=3, minute=0),
         },
     }
@@ -216,7 +241,7 @@ Notes:
 - Database backups briefly need twice the dump size in `BACKUP_LOCAL_DB_DIR` while the
   ciphertext copy is written; folder and S3-source backups encrypt in-stream with no
   extra disk.
-- Requires the `cryptography` package (`pip install django-gdrive-backup[encryption]`) -
+- Requires the `cryptography` package (`pip install django-cloud-backup[encryption]`) -
   already present in practice, as encrypted-credentials depends on it.
 - `BackupAzureToS3` is a separate rclone-compatible mirror and is not encrypted.
 - With multiple backup configurations (below), encryption is set per config rather
@@ -258,9 +283,9 @@ Running a config:
     python manage.py restore_db --config staging       # e.g. on the staging server
 
     CELERY_BEAT_SCHEDULE = {
-        'backup': {'task': 'gdrive_backup.tasks.backup',
+        'backup': {'task': 'cloud_backup.tasks.backup',
                    'schedule': crontab(hour='8-19', minute=10)},
-        'backup_staging': {'task': 'gdrive_backup.tasks.backup',
+        'backup_staging': {'task': 'cloud_backup.tasks.backup',
                            'schedule': crontab(hour=6, minute=0),
                            'kwargs': {'config': 'staging'}},
     }
@@ -287,13 +312,13 @@ backup through a config with a different key (or none) fails cleanly.
 urls.py
 
     urlpatterns = [
-                    path('backup/', include('gdrive_backup.urls')),
+                    path('backup/', include('cloud_backup.urls')),
                     ....
 
 
-All URL names live under the `gdrive_backup` namespace (e.g.
-`reverse('gdrive_backup:backup-info')`). Previously the basic management page
-used un-namespaced names such as `backup-info`; add the `gdrive_backup:` prefix
+All URL names live under the `cloud_backup` namespace (e.g.
+`reverse('cloud_backup:backup-info')`). Previously the basic management page
+used un-namespaced names such as `backup-info`; add the `cloud_backup:` prefix
 if you reverse them yourself.
 
 An enhanced version of the management page will be shown if the following django apps are installed
@@ -310,7 +335,7 @@ The enhanced page views build the whole UI (menus, storage info and tables) into
 single HTML string, `{{ backup_content }}`, so it can be dropped into your own
 template. Subclass the base views and set `template_name`:
 
-    from gdrive_backup.enhanced_views import BackupBaseView, SchemaTableBaseView
+    from cloud_backup.enhanced_views import BackupBaseView, SchemaTableBaseView
 
     class MyBackupView(BackupBaseView):
         template_name = 'myapp/backup.html'
@@ -330,17 +355,17 @@ page script, then place the content wherever it fits your layout:
     {{ backup_content }}
 
 Register the subclasses with `backup_urlpatterns` so the menu links and modals
-(which reverse the standard `gdrive_backup:` URL names) point at your views:
+(which reverse the standard `cloud_backup:` URL names) point at your views:
 
-    from gdrive_backup.urls import backup_urlpatterns
+    from cloud_backup.urls import backup_urlpatterns
 
     urlpatterns = [
         path('backup/', include((backup_urlpatterns(
-            backup_view=MyBackupView, schema_table_view=MySchemaTableView), 'gdrive_backup'))),
+            backup_view=MyBackupView, schema_table_view=MySchemaTableView), 'cloud_backup'))),
     ]
 
 The unbranded standard page remains the default when using
-`include('gdrive_backup.urls')`.
+`include('cloud_backup.urls')`.
 
 **Restoring from the management page**
 
@@ -384,7 +409,7 @@ settings.py
 
     CELERY_BEAT_SCHEDULE = {
         'backup': {
-            'task': 'gdrive_backup.tasks.backup',
+            'task': 'cloud_backup.tasks.backup',
             'schedule': crontab(hour='8-19', minute=10, day_of_week='mon-fri')
         }
     }

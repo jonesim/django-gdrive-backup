@@ -9,7 +9,7 @@ GB = 1024 * 1024 * 1024
 
 class BackupInfo(PermissionRequiredMixin, TemplateView):
 
-    template_name = "gdrive_backup/info.html"
+    template_name = "cloud_backup/info.html"
     permission_required = 'access_admin'
 
     def get_context_data(self, **kwargs):
@@ -32,7 +32,7 @@ class BackupView(PermissionRequiredMixin, TemplateView):
 
     def get(self, request, *args, **kwargs):
         backup.delay()
-        return redirect('gdrive_backup:backup-info')
+        return redirect('cloud_backup:backup-info')
 
 
 class EmptyTrashView(PermissionRequiredMixin, TemplateView):
@@ -40,4 +40,4 @@ class EmptyTrashView(PermissionRequiredMixin, TemplateView):
 
     def get(self, request, *args, **kwargs):
         Backup().storage.empty_trash()
-        return redirect('gdrive_backup:backup-info')
+        return redirect('cloud_backup:backup-info')
