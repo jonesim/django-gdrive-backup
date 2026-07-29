@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "django-gdrive-backup"
 version = "0.0.12"
-description = "Backs up django postgres databases, local folders and S3 folders to a Google Drive folder through a google service account."
+description = "DEPRECATED - renamed to django-cloud-backup. Backs up django postgres databases, local folders and S3 folders to a Google Drive folder through a google service account."
 readme = "README.md"
 requires-python = ">=3.6"
 license = "MIT"
@@ -19,6 +19,7 @@ dependencies = [
     "requests",
 ]
 classifiers = [
+    "Development Status :: 7 - Inactive",
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]

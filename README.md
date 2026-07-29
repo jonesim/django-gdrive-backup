@@ -1,3 +1,15 @@
+# ⚠️ Deprecated — project renamed to django-cloud-backup
+
+This is the final release of **django-gdrive-backup** and it will receive no further
+updates or support. Development continues as
+[**django-cloud-backup**](https://pypi.org/project/django-cloud-backup/) (module
+`cloud_backup`), which adds S3-compatible (AWS, Backblaze B2, Cloudflare R2) and
+Azure Blob Storage destinations alongside Google Drive, multiple named backup
+destinations, client-side encryption and ransomware protection. See its README for
+migration notes (renamed settings, URL namespace, Celery task names).
+
+---
+
 [![PyPI version](https://badge.fury.io/py/django-gdrive-backup.svg)](https://badge.fury.io/py/django-gdrive-backup)
 
 
