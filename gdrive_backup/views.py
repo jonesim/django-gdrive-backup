@@ -32,7 +32,7 @@ class BackupView(PermissionRequiredMixin, TemplateView):
 
     def get(self, request, *args, **kwargs):
         backup.delay()
-        return redirect('backup-info')
+        return redirect('gdrive_backup:backup-info')
 
 
 class EmptyTrashView(PermissionRequiredMixin, TemplateView):
@@ -40,4 +40,4 @@ class EmptyTrashView(PermissionRequiredMixin, TemplateView):
 
     def get(self, request, *args, **kwargs):
         Backup().storage.empty_trash()
-        return redirect('backup-info')
+        return redirect('gdrive_backup:backup-info')

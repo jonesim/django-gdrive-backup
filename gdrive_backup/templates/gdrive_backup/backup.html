@@ -1,4 +1,4 @@
-{% load ajax_helpers modal_tags %}
+{% load ajax_helpers %}
 <!doctype html>
 
 <html lang="en">
@@ -23,23 +23,7 @@
 <nav class="navbar navbar-expand-lg header-color navbar-dark active-bar">
     <h4>Django Backup &nbsp;&nbsp;&nbsp;{% if schema %}Schema - {{ schema }}{% endif %}</h4>
 </nav>
-{{ menus.breadcrumbs.render }}
-<div class="m-4">
-    {{ menus.buttons.render }}
-    <div class="my-2" id="storage_info">Loading backup storage information</div>
-    {% if datatables.schemas %}
-        {{ datatables.schemas.render }}
-    {% endif %}
-    {{ datatables.schema_tables.render }}
-
-    {{ datatables.files.render }}
-    {% if datatables.deleted_files %}
-        <br>
-        <br>
-        <h4>Deleted Files</h4>
-        {{ datatables.deleted_files.render }}
-    {% endif %}
-</div>
+{{ backup_content }}
 
 </body>
 </html>

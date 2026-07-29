@@ -6,6 +6,8 @@ from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
 from django.contrib.auth.mixins import PermissionRequiredMixin
+from django.template.loader import render_to_string
+from django.utils.safestring import mark_safe
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
 from django_datatables.helpers import row_button, overwrite_cell
@@ -62,9 +64,26 @@ class TableBackup(AjaxTaskMixin, AjaxHelpers):
         return self.command_response()
 
 
-class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableView):
+class BackupContentMixin:
+    """Renders the menus and datatables to a single HTML string in
+    context['backup_content'] using content_template, so the backup UI can be
+    embedded in a host project's own branded template. That template must still
+    include the ajax_helpers/datatables/modals libs and {{ ajax_helpers_script }}."""
 
-    template_name = 'gdrive_backup/backup.html'
+    content_template = 'gdrive_backup/backup_content.html'
+
+    def render_to_response(self, context, **response_kwargs):
+        # with a single table (no trash on S3/Azure, one schema) DatatableView only
+        # sets the singular 'datatable' key, but the content template always uses
+        # 'datatables'
+        context['datatables'] = self.tables
+        context['backup_content'] = mark_safe(
+            render_to_string(self.content_template, context, request=self.request))
+        return super().render_to_response(context, **response_kwargs)
+
+
+class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, MenuMixin, DatatableView):
+
     permission_required = 'access_admin'
 
     def setup_menu(self):
@@ -155,9 +174,6 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
     def get_context_data(self, **kwargs):
         self.add_page_command('ajax_post', data={'ajax': 'read_storage_info'})
         context = super().get_context_data(**kwargs)
-        # with a single table (no trash on S3/Azure, one schema) DatatableView only sets
-        # the singular 'datatable' key, but the template always uses 'datatables'
-        context['datatables'] = self.tables
         context['schema'] = self.schema
         return context
 
@@ -186,9 +202,13 @@ class BackupView(TableBackup,  PermissionRequiredMixin,  MenuMixin, DatatableVie
         return [dict(**f, **f.get('metadata', {})) for f in files if not f.get('metadata', {}).get('table')]
 
 
-class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxHelpers, MenuMixin, DatatableView):
+class BackupView(BackupBaseView):
 
     template_name = 'gdrive_backup/backup.html'
+
+
+class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, MenuMixin, DatatableView):
+
     permission_required = 'access_admin'
 
     def setup_menu(self):
@@ -238,6 +258,16 @@ class SchemaTableView(TableBackup, AjaxTaskMixin, PermissionRequiredMixin, AjaxH
         table.sort('table')
         table.table_options['stateSave'] = False
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['schema'] = self.kwargs['schema']
+        return context
+
     def get_table_query(self, table, **kwargs):
         files = self.backup.get_backup_db(schema=self.kwargs.get('schema')).get_db_backup_files()
         return [dict(**f, **f['metadata']) for f in files if f.get('metadata', {}).get('table')]
+
+
+class SchemaTableView(SchemaTableBaseView):
+
+    template_name = 'gdrive_backup/backup.html'
