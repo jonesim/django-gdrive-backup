@@ -182,6 +182,100 @@ locked bucket - the prior locked version survives underneath.
 With delete-less credentials, pruning logs a warning instead of failing the backup;
 leave `BACKUP_DB_RETENTION` unset and let bucket lifecycle rules do the pruning.
 
+**Client-side encryption**
+
+By default backups are stored as the provider receives them - anyone with access to
+the Drive folder or bucket can read a full database dump. Setting `BACKUP_ENCRYPTION`
+encrypts every backup (database dumps, local folder files and S3-source files) on the
+client before upload, using chunked AES-256-GCM, so the provider only ever holds
+ciphertext:
+
+    BACKUP_ENCRYPTION = True     # reuse the encrypted-credentials SETTINGS_KEY
+    BACKUP_ENCRYPTION = '...'    # or a dedicated urlsafe-base64 32-byte key
+
+`True` derives backup keys from the same `SETTINGS_KEY` that already protects the
+encrypted credentials - nothing new to manage, and the key never sits in the
+repository. The trade-off is coupling: today `SETTINGS_KEY` can be rotated cheaply by
+re-encrypting the `.enc` settings files, but once backups are encrypted with it, old
+backups need the old key forever. A dedicated key avoids that; generate one with:
+
+    python -c "from encrypted_credentials.encrypted_file import random_key; print(random_key())"
+
+and keep it in the encrypted private settings, not plain settings.py.
+
+Notes:
+
+- Restores are transparent - encrypted and older unencrypted backups are detected by
+  content and both restore normally, including `restore_db --local_file`. A wrong or
+  missing key fails cleanly before anything reaches `pg_restore`.
+- **Losing the key means losing every backup encrypted with it.** Keep a copy of the
+  key somewhere that does not depend on the server or the backups themselves.
+- File deduplication keeps working: the plaintext md5 is recorded in each file's
+  metadata at upload and compared on later runs. If you turn encryption off again,
+  already-encrypted file backups re-upload once (their metadata is no longer fetched).
+- Database backups briefly need twice the dump size in `BACKUP_LOCAL_DB_DIR` while the
+  ciphertext copy is written; folder and S3-source backups encrypt in-stream with no
+  extra disk.
+- Requires the `cryptography` package (`pip install django-gdrive-backup[encryption]`) -
+  already present in practice, as encrypted-credentials depends on it.
+- `BackupAzureToS3` is a separate rclone-compatible mirror and is not encrypted.
+- With multiple backup configurations (below), encryption is set per config rather
+  than globally.
+
+**Multiple backup configurations**
+
+`BACKUP_CONFIGS` lets one project back up to several destinations with different
+behaviour per destination - the classic case being a hardened offsite backup plus an
+unencrypted database copy that a staging server restores from:
+
+    BACKUP_CONFIGS = {
+        'default': {
+            'storage': {'backend': 's3', 'bucket': 'offsite-backups', ..., 'lock': {...}},
+            'encryption': True,
+            'changed_files': 'protect',
+        },
+        'staging': {
+            'storage': {'backend': 's3', 'bucket': 'staging-transfer', ...},
+            'encryption': False,
+            'dirs': [],                              # database only, no folder backups
+            'retention': [{'days': 1, 'number': 2}], # keep just the latest couple of dumps
+            'changed_files': 'overwrite',
+        },
+    }
+
+Config keys: `storage` (a `BACKUP_STORAGE`-style dict), `encryption`, `db` (include
+the database, default True), `db_dir`, `dirs` (as `BACKUP_DIRS`), `s3_dirs` (as
+`S3_BACKUP_DIRS`), `retention`, `changed_files`. **A key absent from a config
+inherits the corresponding legacy global setting** (`BACKUP_STORAGE`,
+`BACKUP_ENCRYPTION`, `BACKUP_DIRS`, ...), so shared values can stay in the globals -
+but note that means a config without `'dirs': []` backs up the global `BACKUP_DIRS`.
+Without `BACKUP_CONFIGS` the globals simply are the default config, so existing
+installations are unaffected.
+
+Running a config:
+
+    python manage.py backup_website --config staging
+    python manage.py restore_db --config staging       # e.g. on the staging server
+
+    CELERY_BEAT_SCHEDULE = {
+        'backup': {'task': 'gdrive_backup.tasks.backup',
+                   'schedule': crontab(hour='8-19', minute=10)},
+        'backup_staging': {'task': 'gdrive_backup.tasks.backup',
+                           'schedule': crontab(hour=6, minute=0),
+                           'kwargs': {'config': 'staging'}},
+    }
+
+The web UI and un-parameterised tasks use the config named `'default'` (or the only
+entry, if there is exactly one). For the staging pattern, the staging server's own
+settings point a config at the same transfer bucket and `restore_db` pulls from it -
+production never shares its offsite credentials or encryption key with staging. If
+the transfer bucket holds an unencrypted production dump, treat the bucket itself as
+production-sensitive, or give that config a dedicated key the staging server also
+has.
+
+Backups made by one config restore with that config's key: restoring an encrypted
+backup through a config with a different key (or none) fails cleanly.
+
 
 **Management commands**
 
@@ -197,6 +291,11 @@ urls.py
                     ....
 
 
+All URL names live under the `gdrive_backup` namespace (e.g.
+`reverse('gdrive_backup:backup-info')`). Previously the basic management page
+used un-namespaced names such as `backup-info`; add the `gdrive_backup:` prefix
+if you reverse them yourself.
+
 An enhanced version of the management page will be shown if the following django apps are installed
 
     'django_modals', 'django_datatables', 'django_menus', 'ajax_helpers'
@@ -204,6 +303,44 @@ An enhanced version of the management page will be shown if the following django
 from the following PyPi packages
 
     django-nested-modals, django-filtered-datatables, django-tab-menus, django-ajax-helpers
+
+**Branding the management page**
+
+The enhanced page views build the whole UI (menus, storage info and tables) into a
+single HTML string, `{{ backup_content }}`, so it can be dropped into your own
+template. Subclass the base views and set `template_name`:
+
+    from gdrive_backup.enhanced_views import BackupBaseView, SchemaTableBaseView
+
+    class MyBackupView(BackupBaseView):
+        template_name = 'myapp/backup.html'
+
+    class MySchemaTableView(SchemaTableBaseView):
+        template_name = 'myapp/backup.html'
+
+The template must include the ajax_helpers/datatables/modals libraries and the
+page script, then place the content wherever it fits your layout:
+
+    {% load ajax_helpers %}
+    {% lib_include 'ajax_helpers' 'Bootstrap' 'FontAwesome' module='ajax_helpers.includes' %}
+    {% lib_include 'datatable' module='django_datatables.includes' %}
+    {% lib_include 'Modals' module='django_modals.includes' %}
+    {{ ajax_helpers_script }}
+    ...
+    {{ backup_content }}
+
+Register the subclasses with `backup_urlpatterns` so the menu links and modals
+(which reverse the standard `gdrive_backup:` URL names) point at your views:
+
+    from gdrive_backup.urls import backup_urlpatterns
+
+    urlpatterns = [
+        path('backup/', include((backup_urlpatterns(
+            backup_view=MyBackupView, schema_table_view=MySchemaTableView), 'gdrive_backup'))),
+    ]
+
+The unbranded standard page remains the default when using
+`include('gdrive_backup.urls')`.
 
 **Restoring from the management page**
 

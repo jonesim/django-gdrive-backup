@@ -8,6 +8,7 @@ import requests
 
 from .base_backup import BaseBackup
 from .compression import decompress
+from .encryption import decrypt_in_place, encrypt_file
 from .prune_backups import PruneBackups
 from .sql_functions import delete_table
 
@@ -40,11 +41,12 @@ DB_FILE_EXTENSIONS = ('.' + DUMP_EXTENSION, '.bz2', '.gz', '.sql')
 class BackupDb(BaseBackup):
 
     def __init__(self, storage, backup_dir, database, local_backup_dir, logger, schema=None,
-                 table=None, exclude_tables=None, exclude_table_data=None):
-        super().__init__(storage, backup_dir, logger)
+                 table=None, exclude_tables=None, exclude_table_data=None, config=None):
+        super().__init__(storage, backup_dir, logger, config=config)
         self.postgres_backup = PostgresBackup(database, self.logger, schema, table,
                                               exclude_tables=exclude_tables,
-                                              exclude_table_data=exclude_table_data)
+                                              exclude_table_data=exclude_table_data,
+                                              encryption_key=self.encryption_key)
         self.local_backup_dir = local_backup_dir
 
     def backup_db_to_storage(self):
@@ -65,21 +67,32 @@ class BackupDb(BaseBackup):
         backup_stream.close()
         os.remove(backup_stream.name)
         backup_filename = None
+        upload_filename = None
         try:
             backup_filename = self.postgres_backup.backup_db('', backup_stream.name)
-            # stored alongside the file so destinations without a server-side md5
-            # (multipart S3, Azure) can still deduplicate and verify
-            metadata['md5'] = self.md5sum(backup_filename)
+            if self.encryption_key is not None:
+                # encrypt to a second temp file so check_upload can verify the storage
+                # backend's hash against the ciphertext it actually received
+                upload_filename = backup_filename + '.enc-tmp'
+                metadata['md5'] = encrypt_file(backup_filename, upload_filename, self.encryption_key)
+                metadata['encrypted'] = '1'
+                os.remove(backup_filename)
+            else:
+                upload_filename = backup_filename
+                # stored alongside the file so destinations without a server-side md5
+                # (multipart S3, Azure) can still deduplicate and verify
+                metadata['md5'] = self.md5sum(backup_filename)
             self.logger.info('Copying backup to storage')
-            with open(backup_filename, 'rb') as compressed_file:
+            with open(upload_filename, 'rb') as compressed_file:
                 stored_file = self.storage.upload(self.base_backup_dir, filename, compressed_file,
                                                   metadata=metadata,
                                                   lock_days=self.storage.lock_days('db'))
-            if not self.check_upload(stored_file, backup_filename):
+            if not self.check_upload(stored_file, upload_filename):
                 raise DatabaseUploadError
         finally:
-            if backup_filename and os.path.exists(backup_filename):
-                os.remove(backup_filename)
+            for temp_file in (backup_filename, upload_filename):
+                if temp_file and os.path.exists(temp_file):
+                    os.remove(temp_file)
 
     # previous name, kept for compatibility
     backup_db_gdrive = backup_db_to_storage
@@ -124,10 +137,12 @@ class BackupDb(BaseBackup):
 
 class PostgresBackup:
 
-    def __init__(self, database, logger, schema=None, table=None, exclude_tables=None, exclude_table_data=None):
+    def __init__(self, database, logger, schema=None, table=None, exclude_tables=None, exclude_table_data=None,
+                 encryption_key=None):
         self.logger = logger
         self.schema = schema
         self.table = table
+        self.encryption_key = encryption_key
         self.exclude_tables = exclude_tables or []
         self.exclude_table_data = exclude_table_data or []
         self.connection_string = (f'postgresql://{database["USER"]}:{urllib.parse.quote(database["PASSWORD"])}'
@@ -137,6 +152,7 @@ class PostgresBackup:
         return subprocess.call(['psql', '-d',  self.connection_string] + commands)
 
     def restore_db(self, backup_file):
+        decrypt_in_place(backup_file, self.encryption_key)
         if backup_file.endswith('.' + DUMP_EXTENSION):
             return_code = subprocess.call(['pg_restore', '-d', self.connection_string, '--clean', '--if-exists',
                                            backup_file])

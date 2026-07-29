@@ -52,9 +52,13 @@ class Command(BaseCommand):
                             default=False,
                             help='Extend object-lock retention on existing backups instead of backing up')
 
+        parser.add_argument('--config',
+                            type=str,
+                            help='Which BACKUP_CONFIGS entry to use (default: the default config)')
+
     def handle(self, *args, **options):
         if options['extend_retention']:
-            Backup(logger=Logger()).extend_file_retention()
+            Backup(logger=Logger(), config=options['config']).extend_file_retention()
             return
         folder_kwargs = {}
         if options['db_only']:
@@ -66,7 +70,7 @@ class Command(BaseCommand):
         elif options['folders_only']:
             folder_kwargs['include_db'] = False
             folder_kwargs['include_s3_folders'] = False
-        Backup(logger=Logger()).backup_db_and_folders(all_schemas=options['all_schemas'],
+        Backup(logger=Logger(), config=options['config']).backup_db_and_folders(all_schemas=options['all_schemas'],
                                                       schema=options['schema'],
                                                       table=options['table'],
                                                       sub_folder=options['sub_folder'],

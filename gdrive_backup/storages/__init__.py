@@ -11,7 +11,8 @@ def storage_settings():
 
 
 def backup_root():
-    """Root folder/prefix at the destination that all backups go under."""
+    """Root folder/prefix that backups go under, for the legacy global settings
+    (kept for external callers - per-config roots live on BackupConfig.root)."""
     return storage_settings().get('root', getattr(settings, 'BACKUP_GDRIVE_DIR', 'django_backup'))
 
 

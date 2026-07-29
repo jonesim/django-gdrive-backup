@@ -1,32 +1,17 @@
 import hashlib
 
-from django.conf import settings
-from django.core.exceptions import ImproperlyConfigured
-
-CHANGED_OVERWRITE = 'overwrite'
-CHANGED_PROTECT = 'protect'
-CHANGED_HISTORY = 'history'
-
-
-def changed_files_mode():
-    """How to handle a source file whose contents no longer match its backup:
-    'overwrite' re-uploads it (original behaviour), 'protect' never touches the
-    existing backup (skip, warn and fail the run - for immutable file stores where a
-    change means corruption or ransomware), 'history' preserves the old version then
-    uploads the new one."""
-    mode = getattr(settings, 'BACKUP_CHANGED_FILES', CHANGED_OVERWRITE)
-    if mode not in (CHANGED_OVERWRITE, CHANGED_PROTECT, CHANGED_HISTORY):
-        raise ImproperlyConfigured(f'BACKUP_CHANGED_FILES must be one of '
-                                   f'{CHANGED_OVERWRITE!r}, {CHANGED_PROTECT!r}, {CHANGED_HISTORY!r}')
-    return mode
+from .config import BackupConfig, CHANGED_HISTORY, CHANGED_OVERWRITE, CHANGED_PROTECT  # noqa: F401 re-export
 
 
 class BaseBackup:
 
-    def __init__(self, storage, base_backup_dir, logger):
+    def __init__(self, storage, base_backup_dir, logger, config=None):
         self.storage = storage
         self.logger = logger
         self.base_backup_dir = storage.ensure_folder(base_backup_dir)
+        # no config = the default config resolved from the legacy global settings
+        self.config = config if config is not None else BackupConfig()
+        self.encryption_key = self.config.encryption_key
 
     def get_existing_backup_files(self, backup_dir, include_metadata=False):
         if isinstance(backup_dir, str):
@@ -36,6 +21,13 @@ class BaseBackup:
     @staticmethod
     def get_hash(f):
         return f.get('hash')
+
+    @staticmethod
+    def content_hash(f):
+        """The md5 of the backed-up content: prefers the md5 recorded in metadata at
+        upload time (still the plaintext hash when the stored bytes are encrypted)
+        over the storage backend's hash of the stored bytes."""
+        return (f.get('metadata') or {}).get('md5') or f.get('hash')
 
     def get_files_by_name(self, directory, include_metadata=False):
         """

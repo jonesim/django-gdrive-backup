@@ -1,7 +1,8 @@
 import io
 import boto3
 import hashlib
-from .base_backup import BaseBackup, CHANGED_HISTORY, CHANGED_PROTECT, changed_files_mode
+from .base_backup import BaseBackup, CHANGED_HISTORY, CHANGED_PROTECT
+from .encryption import EncryptingReader
 
 
 class S3File(io.RawIOBase):
@@ -105,8 +106,8 @@ class BackupS3(BaseBackup):
     Will skip files where the S3 ETag matches the value stored in the file's metadata.
     """
 
-    def __init__(self, access_key_id, access_key, storage, backup_dir, logger):
-        super().__init__(storage, backup_dir, logger)
+    def __init__(self, access_key_id, access_key, storage, backup_dir, logger, config=None):
+        super().__init__(storage, backup_dir, logger, config=config)
         self.s3 = boto3.resource('s3',  aws_access_key_id=access_key_id,  aws_secret_access_key=access_key)
         self.changed_files = []
 
@@ -124,7 +125,7 @@ class BackupS3(BaseBackup):
         :return:
         """
 
-        mode = changed_files_mode()
+        mode = self.config.changed_files
         lock_days = self.storage.lock_days('file')
         folders = BackupFolders(self, destination)
         bucket = self.s3.Bucket(name=bucket_name)
@@ -148,5 +149,11 @@ class BackupS3(BaseBackup):
                     self.storage.keep_version(folders.existing_file(path, filename), lock_days=lock_days)
             self.logger.info(f'Backing up {f.key}')
             s3_file = S3File(self.s3.Object(bucket_name, f.key))
+            # dedup compares the source ETag stored in metadata, so it is unaffected
+            # by the stored bytes being encrypted
+            metadata = {'ETag': f.e_tag}
+            if self.encryption_key is not None:
+                s3_file = EncryptingReader(s3_file, s3_file.size, self.encryption_key, logger=self.logger)
+                metadata['encrypted'] = '1'
             self.storage.upload(folders.parent(path), filename, s3_file,
-                                metadata={'ETag': f.e_tag}, lock_days=lock_days)
+                                metadata=metadata, lock_days=lock_days)
