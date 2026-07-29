@@ -1,12 +1,20 @@
 from django.core.management.base import BaseCommand
 
-from gdrive_backup.backup import Backup
+from cloud_backup.backup import Backup
 
 
 class Logger:
     @staticmethod
     def info(text):
         print(text)
+
+    @staticmethod
+    def warning(text):
+        print('WARNING: ' + text)
+
+    @staticmethod
+    def error(text):
+        print('ERROR: ' + text)
 
 
 class Command(BaseCommand):
@@ -39,7 +47,19 @@ class Command(BaseCommand):
         parser.add_argument('-sub_folder',
                             type=str)
 
+        parser.add_argument('--extend_retention',
+                            action='store_true',
+                            default=False,
+                            help='Extend object-lock retention on existing backups instead of backing up')
+
+        parser.add_argument('--config',
+                            type=str,
+                            help='Which BACKUP_CONFIGS entry to use (default: the default config)')
+
     def handle(self, *args, **options):
+        if options['extend_retention']:
+            Backup(logger=Logger(), config=options['config']).extend_file_retention()
+            return
         folder_kwargs = {}
         if options['db_only']:
             folder_kwargs['include_folders'] = False
@@ -50,7 +70,7 @@ class Command(BaseCommand):
         elif options['folders_only']:
             folder_kwargs['include_db'] = False
             folder_kwargs['include_s3_folders'] = False
-        Backup(logger=Logger()).backup_db_and_folders(all_schemas=options['all_schemas'],
+        Backup(logger=Logger(), config=options['config']).backup_db_and_folders(all_schemas=options['all_schemas'],
                                                       schema=options['schema'],
                                                       table=options['table'],
                                                       sub_folder=options['sub_folder'],

@@ -1,0 +1,23 @@
+{% load ajax_helpers %}
+<!doctype html>
+
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Acme Corp Backups</title>
+    {% lib_include 'ajax_helpers' 'Bootstrap' 'FontAwesome' module='ajax_helpers.includes' %}
+    {% lib_include 'datatable' module='django_datatables.includes' %}
+    {% lib_include 'Modals' module='django_modals.includes' %}
+
+    {{ ajax_helpers_script }}
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-success">
+    <h4 class="text-white my-0">Acme Corp &mdash; Backups {% if schema %}({{ schema }}){% endif %}</h4>
+</nav>
+{{ backup_content }}
+<footer class="text-center text-muted my-3">Powered by django-cloud-backup</footer>
+
+</body>
+</html>

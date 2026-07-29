@@ -8,6 +8,9 @@ class PruneBackups:
         self.backup_dict = backup_dict
 
     def backups_to_remove(self, recipe):
+        # an empty recipe keeps nothing in self.keep, which would remove every backup
+        if not recipe:
+            return {}
         for r in recipe:
             if 'months' in r:
                 self.keep_monthly_backups(r['months'], r['number'])

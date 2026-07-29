@@ -7,9 +7,11 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--local_file', type=str)
         parser.add_argument('--schema', type=str)
+        parser.add_argument('--config', type=str,
+                            help='Which BACKUP_CONFIGS entry to restore from (default: the default config)')
 
     def handle(self, *args, **options):
-        db = Backup().get_backup_db(schema=options['schema'])
+        db = Backup(config=options['config']).get_backup_db(schema=options['schema'])
         if options['local_file'] is not None:
             db.postgres_backup.restore_db(options['local_file'])
         else:
@@ -18,4 +20,4 @@ class Command(BaseCommand):
             confirm = input('Do you want to restore which will overwrite current database (yes/no)? ')
             if confirm.lower() == 'yes':
                 print('Restoring..')
-                db.restore_gdrive_db(file_id=latest_db['id'])
+                db.restore_db_from_storage(file_id=latest_db['id'])

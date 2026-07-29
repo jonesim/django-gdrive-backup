@@ -7,7 +7,8 @@ from django_modals.modals import Modal
 from django_modals.task_modals import TaskModal
 from ajax_helpers.utils import is_ajax
 
-from gdrive_backup.backup import Backup
+from cloud_backup.backup import Backup
+from cloud_backup.utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 
 class SuperUserMixin(UserPassesTestMixin):
@@ -15,14 +16,23 @@ class SuperUserMixin(UserPassesTestMixin):
         return self.request.user.is_superuser
 
 
-class ConfirmRestoreModal(SuperUserMixin, Modal):
+class RestoreAllowedMixin(SuperUserMixin):
+    """Server-side enforcement of BACKUP_ALLOW_RESTORE — hiding the buttons is not enough."""
+
+    def dispatch(self, request, *args, **kwargs):
+        if not allowed_to_restore():
+            return self.command_response('message', text=RESTORE_BLOCKED_MESSAGE)
+        return super().dispatch(request, *args, **kwargs)
+
+
+class ConfirmRestoreModal(RestoreAllowedMixin, Modal):
 
     modal_title = 'Warning'
 
     def get_modal_buttons(self):
         return [
             modal_button('Confirm', ajax_modal_redirect(
-                'gdrive_backup:restore_db', base64={'pk': self.slug['base64'][0]}
+                'cloud_backup:restore_db', base64={'pk': self.slug['base64'][0]}
             ), 'btn-danger'),
             modal_button('Cancel', 'close', 'btn-secondary')
         ]
@@ -37,7 +47,7 @@ class ConfirmBackupModal(SuperUserMixin, Modal):
 
     def get_modal_buttons(self):
         return [
-            modal_button('Yes', ajax_modal_redirect('gdrive_backup:django_backup', slug=self.kwargs['slug']),
+            modal_button('Yes', ajax_modal_redirect('cloud_backup:django_backup', slug=self.kwargs['slug']),
                          'btn-warning'),
             modal_button('Cancel', 'close', 'btn-secondary')
         ]
@@ -57,6 +67,10 @@ class SuperUserTaskModal(SuperUserMixin, TaskModal):
         return super().dispatch(request, *args, **kwargs)
 
 
+class RestoreTaskModal(RestoreAllowedMixin, SuperUserTaskModal):
+    pass
+
+
 class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
 
     modal_title = 'Warning'
@@ -65,8 +79,7 @@ class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
         return 'Are you sure you want to permanently remove deleted items?'
 
     def button_empty_trash(self, **_kwargs):
-        db = Backup().get_backup_db()
-        db.drive.service.files().emptyTrash().execute()
+        Backup().storage.empty_trash()
         return self.command_response('reload')
 
     def get_modal_buttons(self):
@@ -74,7 +87,7 @@ class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
                 modal_button('Cancel', 'close', 'btn-secondary')]
 
 
-class ConfirmDropSchemaModal(SuperUserMixin, Modal):
+class ConfirmDropSchemaModal(RestoreAllowedMixin, Modal):
 
     modal_title = 'Warning'
 

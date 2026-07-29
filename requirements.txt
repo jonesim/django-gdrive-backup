@@ -15,3 +15,5 @@ openpyxl
 psycopg2
 flower
 requests
+boto3
+cryptography
