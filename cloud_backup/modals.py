@@ -1,7 +1,6 @@
 import json
 
 from django.contrib.auth.mixins import UserPassesTestMixin
-from django.db import connection
 from django_modals.helper import modal_button, ajax_modal_redirect, modal_button_method
 from django_modals.modals import Modal
 from django_modals.task_modals import TaskModal
@@ -85,23 +84,3 @@ class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
     def get_modal_buttons(self):
         return [modal_button_method('Confirm', 'empty_trash'),
                 modal_button('Cancel', 'close', 'btn-secondary')]
-
-
-class ConfirmDropSchemaModal(RestoreAllowedMixin, Modal):
-
-    modal_title = 'Warning'
-
-    def modal_content(self):
-        return ('<div class="alert alert-danger"><strong>This will delete all data in the '
-                'database and render the whole site unusable</strong><br>'
-                'If the page is not refreshed a database can be restored after this process</div>')
-
-    def button_drop_schema(self, **_kwargs):
-        with connection.cursor() as cursor:
-            cursor.execute("DROP SCHEMA public CASCADE")
-            cursor.execute("CREATE SCHEMA public")
-        return self.command_response('close')
-
-    def get_modal_buttons(self):
-        return [modal_button_method('Confirm', 'drop_schema', 'btn-danger'),
-                modal_button('Cancel', 'close', 'btn-success')]

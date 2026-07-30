@@ -117,8 +117,6 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                  {'visible': len(self.schemas) == 1}),
                 ('cloud_backup:confirm_empty_trash', 'Empty Trash',
                  {'css_classes': 'btn btn-warning', 'visible': self.backup.storage.supports_trash}),
-                ('cloud_backup:confirm_drop_schema,-', 'Drop Public Schema',
-                 {'css_classes': 'btn btn-danger', 'visible': allowed_to_restore()}),
             )
 
     # noinspection PyAttributeOutsideInit

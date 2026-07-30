@@ -28,8 +28,6 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
                  name='restore_db'),
             path('modal/confim_backup/<str:slug>/', modals.ConfirmBackupModal.as_view(), name='confirm_backup'),
             path('modal/confirm_empty_trash/', modals.ConfirmEmptyTrashModal.as_view(), name='confirm_empty_trash'),
-            path('modal/confirm_drop_schema/<str:slug>/', modals.ConfirmDropSchemaModal.as_view(),
-                 name='confirm_drop_schema'),
         ]
 
     urlpatterns = backup_urlpatterns()
