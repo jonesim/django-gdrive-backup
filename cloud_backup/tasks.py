@@ -61,6 +61,9 @@ try:
     @shared_task(bind=True)
     def ajax_backup(self, **kwargs):
         task_kwargs = kwargs['slug'] if 'slug' in kwargs else kwargs
+        # slug values are strings, so boolean kwargs (include_db-False, all_schemas-True)
+        # must be converted before reaching backup_db_and_folders
+        task_kwargs = {k: v == 'True' if v in ('True', 'False') else v for k, v in task_kwargs.items()}
         Backup(StateLogger(self)).backup_db_and_folders(**task_kwargs)
         return {'commands': [ajax_command('message', text='Backup Complete'), ajax_command('reload')]}
 
