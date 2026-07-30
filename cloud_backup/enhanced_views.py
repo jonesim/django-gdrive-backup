@@ -5,12 +5,13 @@ from functools import cached_property
 from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
+from ajax_helpers.utils import ajax_command
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
-from django_datatables.helpers import row_button, overwrite_cell
+from django_datatables.helpers import row_button
 from django_menus.menu import MenuMixin
 from django_modals.datatables import ModalLink
 from django_modals.decorators import ConfirmAjaxMethod
@@ -29,6 +30,16 @@ def restore_table_button(text):
                      enabled=allowed_to_restore())
 
 
+def overwrite_visible_cell(table, row_no, column_name, html):
+    """Like django_datatables' overwrite_cell, but hidden columns (e.g. '.id') render
+    no <td> at all, so the td:nth-of-type position must be counted over visible
+    columns only - overwrite_cell counts hidden ones and misses the cell."""
+    visible = [c.column_name for c in table.columns if not c.options.get('hidden')]
+    return ajax_command('html',
+                        selector=f'#{table.table_id} #{row_no} td:nth-of-type({visible.index(column_name) + 1})',
+                        html=html)
+
+
 class TableBackup(AjaxTaskMixin, AjaxHelpers):
 
     tasks = {'backup': ajax_backup}
@@ -40,7 +51,7 @@ class TableBackup(AjaxTaskMixin, AjaxHelpers):
     # noinspection PyUnresolvedReferences
     def set_cell_commands(self, table_id, row_no, html):
         self.setup_tables()
-        self.add_command(overwrite_cell(
+        self.add_command(overwrite_visible_cell(
             self.tables[table_id], row_no, 'Backup', f'<span class="text-success">{html}</span>')
         )
 
