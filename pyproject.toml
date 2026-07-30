@@ -15,7 +15,7 @@ authors = [
 ]
 dependencies = [
     "encrypted-credentials",
-    "google-client-helper",
+    "google-client-helper>=0.0.4",
     "requests",
 ]
 classifiers = [
