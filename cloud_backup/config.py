@@ -34,6 +34,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
 from .encryption import resolve_key
+from .storages import check_storage_settings
 
 DEFAULT_CONFIG = 'default'
 
@@ -52,6 +53,7 @@ class BackupConfig:
         config = config or {}
         self.storage_settings = config.get('storage',
                                            getattr(settings, 'BACKUP_STORAGE', None) or {'backend': 'gdrive'})
+        check_storage_settings(self.storage_settings)
         self.root = self.storage_settings.get('root', getattr(settings, 'BACKUP_ROOT', 'django_backup'))
         self.include_db = config.get('db', True)
         self.db_dir = config.get('db_dir', getattr(settings, 'BACKUP_DB_DIR', self.root + '/db'))

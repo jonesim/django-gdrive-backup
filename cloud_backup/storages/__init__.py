@@ -16,6 +16,21 @@ def backup_root():
     return storage_settings().get('root', getattr(settings, 'BACKUP_ROOT', 'django_backup'))
 
 
+CONFIG_ONLY_KEYS = ('encryption', 'changed_files', 'retention', 'db', 'db_dir', 'dirs', 's3_dirs')
+
+
+def check_storage_settings(config):
+    """Fail fast on backup-config keys misplaced in a storage dict (e.g. 'encryption'
+    in BACKUP_STORAGE) - otherwise they reach the backend constructor and die
+    mid-backup with an unhelpful TypeError."""
+    misplaced = [key for key in CONFIG_ONLY_KEYS if key in config]
+    if misplaced:
+        raise ImproperlyConfigured(
+            f'{", ".join(misplaced)} in a storage dict: these are backup config settings, '
+            f'not storage settings - set the matching global (e.g. BACKUP_ENCRYPTION) or put '
+            f"them next to 'storage' in the BACKUP_CONFIGS entry")
+
+
 def get_storage(config=None):
     """
     Build the configured BackupStorage. Config keys other than 'backend' and 'root' are
@@ -31,6 +46,7 @@ def get_storage(config=None):
     azure:  container, connection_string or account_url + credential
     """
     config = dict(config if config is not None else storage_settings())
+    check_storage_settings(config)
     backend = config.pop('backend', 'gdrive')
     config.pop('root', None)
     lock = config.pop('lock', None)
