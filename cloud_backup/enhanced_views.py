@@ -136,12 +136,11 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
 
     @staticmethod
     def setup_files(table):
-        table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
+        table.add_columns('.id', 'ip_address', 'table', 'name', 'size', 'encrypted',
                           DateTimeColumn(title='Backup Date', field='created'),
                           DatatableColumn(column_name='drop_restore', enabled=allowed_to_restore(),
                                           render=[row_button('drop_restore', 'Drop Restore',
-                                                             button_classes='btn btn-warning btn-sm',)]),
-                          restore_table_button('Restore DB'))
+                                                             button_classes='btn btn-warning btn-sm',)]))
         table.sort('-created')
         table.table_options['stateSave'] = False
 
@@ -151,8 +150,9 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
             return self.command_response('message', text=RESTORE_BLOCKED_MESSAGE)
         table_row = json.loads(row_data)
         return self.command_response('show_modal',
-                                     modal=reverse_modal('cloud_backup:restore_db'
-                                                         ,base64={'pk': table_row[0], 'drop_schema': 'public'}))
+                                     modal=reverse_modal('cloud_backup:restore_db',
+                                                         base64={'pk': table_row[0],
+                                                                 'drop_schema': self.schema or 'public'}))
 
     @staticmethod
     def setup_deleted_files(table):
@@ -210,7 +210,10 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
     def get_table_query(self, table, **kwargs):
         files = self.backup.get_backup_db(schema=self.schema).get_db_backup_files(
             deleted=table.table_id != 'files')
-        return [dict(**f, **f.get('metadata', {})) for f in files if not f.get('metadata', {}).get('table')]
+        rows = [dict(**f, **f.get('metadata', {})) for f in files if not f.get('metadata', {}).get('table')]
+        for row in rows:
+            row['encrypted'] = 'Yes' if row.get('encrypted') else 'No'
+        return rows
 
 
 class BackupView(BackupBaseView):
@@ -235,7 +238,7 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
     @staticmethod
     def setup_files(table):
-        table.add_columns('.id', 'ip_address', 'table', 'name', 'size',
+        table.add_columns('.id', 'ip_address', 'table', 'name', 'size', 'encrypted',
                           DateTimeColumn(title='Backup Date', field='created'),
                           restore_table_button('Restore Table'))
         table.sort('-created')
@@ -276,7 +279,10 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
     def get_table_query(self, table, **kwargs):
         files = self.backup.get_backup_db(schema=self.kwargs.get('schema')).get_db_backup_files()
-        return [dict(**f, **f['metadata']) for f in files if f.get('metadata', {}).get('table')]
+        rows = [dict(**f, **f['metadata']) for f in files if f.get('metadata', {}).get('table')]
+        for row in rows:
+            row['encrypted'] = 'Yes' if row.get('encrypted') else 'No'
+        return rows
 
 
 class SchemaTableView(SchemaTableBaseView):
