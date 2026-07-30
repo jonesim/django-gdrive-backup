@@ -1,6 +1,6 @@
 import json
 
-from django.contrib.auth.mixins import UserPassesTestMixin
+from django.contrib.auth.mixins import PermissionRequiredMixin, UserPassesTestMixin
 from django_modals.helper import modal_button, ajax_modal_redirect, modal_button_method
 from django_modals.modals import Modal
 from django_modals.task_modals import TaskModal
@@ -68,6 +68,13 @@ class SuperUserTaskModal(SuperUserMixin, TaskModal):
 
 class RestoreTaskModal(RestoreAllowedMixin, SuperUserTaskModal):
     pass
+
+
+class AdminTaskModal(PermissionRequiredMixin, TaskModal):
+    """Read-only tasks (e.g. verify) need the same access as the backup pages,
+    not superuser."""
+    permission_required = 'access_admin'
+    refresh_ms = 500
 
 
 class ConfirmEmptyTrashModal(SuperUserMixin, Modal):

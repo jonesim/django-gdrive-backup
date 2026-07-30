@@ -1,13 +1,18 @@
 import base64
 import datetime
+import hashlib
 import json
+import os
 from functools import cached_property
 from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
 from ajax_helpers.utils import ajax_command
 from django.contrib.auth.mixins import PermissionRequiredMixin
+from django.http import Http404
 from django.template.loader import render_to_string
+from django.urls import reverse
+from django.utils.html import escape
 from django.utils.safestring import mark_safe
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
@@ -19,6 +24,7 @@ from django_modals.helper import reverse_modal
 from openpyxl import Workbook
 
 from cloud_backup.backup import Backup
+from .backup_local_files import BackupLocal, local_backup_path
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
 from .tasks import ajax_backup
 from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
@@ -113,10 +119,18 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                 ('cloud_backup:confirm_backup,-', 'Backup database'),
                 ('cloud_backup:confirm_backup,all_schemas-True', 'Backup All Schemas',
                  {'visible': len(self.schemas) > 1}),
+                ('cloud_backup:confirm_backup,include_db-False', 'Backup Files',
+                 {'visible': bool(self.backup.config.dirs or self.backup.config.s3_dirs)}),
                 (f'cloud_backup:schema_info,{self.schemas[0][0]}', f'View {self.schemas[0][0]}',
                  {'visible': len(self.schemas) == 1}),
                 ('cloud_backup:confirm_empty_trash', 'Empty Trash',
                  {'css_classes': 'btn btn-warning', 'visible': self.backup.storage.supports_trash}),
+                # with a single backup dir the root listing is a pointless extra
+                # click, so link straight into it
+                ('cloud_backup:backup_files', 'Files',
+                 {'url_args': [0], 'visible': len(self.backup.config.dirs) == 1}),
+                ('cloud_backup:backup_files_root', 'Files',
+                 {'visible': len(self.backup.config.dirs) > 1}),
             )
 
     # noinspection PyAttributeOutsideInit
@@ -284,5 +298,145 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
 
 class SchemaTableView(SchemaTableBaseView):
+
+    template_name = 'cloud_backup/backup.html'
+
+
+class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, MenuMixin, DatatableView):
+    """File browser over the BACKUP_DIRS folder backups. The root level (no backup_dir)
+    lists each configured backup directory as a folder; inside one, sub-folders are
+    clickable rows and files carry per-file checksum verification against the local
+    source files."""
+
+    permission_required = 'access_admin'
+
+    # noinspection PyAttributeOutsideInit
+    def dispatch(self, request, *args, backup_dir=None, sub_path='', **kwargs):
+        self.backup_dir = backup_dir
+        self.sub_path = sub_path.strip('/')
+        if backup_dir is not None:
+            if not 0 <= backup_dir < len(self.backup.config.dirs):
+                raise Http404('No such backup directory')
+            self.source_dir, self.dest_name = self.backup.config.dirs[self.backup_dir]
+        return super().dispatch(request, *args, **kwargs)
+
+    @cached_property
+    def dest_folder(self):
+        # resolve the destination exactly as backup_folder does, but with get_folder
+        # so browsing never creates folders
+        local = BackupLocal(self.backup.storage, self.backup.config.root, self.backup.logger,
+                            config=self.backup.config)
+        folder = self.backup.storage.get_folder(self.dest_name, parent=local.base_backup_dir)
+        for segment in self.sub_path.split('/') if self.sub_path else []:
+            if folder is None:
+                return None
+            folder = self.backup.storage.get_folder(segment, parent=folder)
+        return folder
+
+    def setup_menu(self):
+        crumbs = [('cloud_backup:backup_info', 'backup'),
+                  ('cloud_backup:backup_files_root', 'Files')]
+        if self.backup_dir is not None:
+            crumbs.append(('cloud_backup:backup_files', self.dest_name, {'url_args': [self.backup_dir]}))
+            segments = self.sub_path.split('/') if self.sub_path else []
+            for n, segment in enumerate(segments):
+                crumbs.append(('cloud_backup:backup_files_path', segment,
+                               {'url_args': [self.backup_dir, '/'.join(segments[:n + 1])]}))
+        self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(*crumbs)
+        if self.backup_dir is not None:
+            self.add_menu('buttons', menu_type='buttons').add_items(
+                (f'cloud_backup:verify_files,backup_dir-{self.backup_dir}', 'Verify All Files'))
+
+    def add_tables(self):
+        self.add_table('files')
+
+    @staticmethod
+    def setup_files(table):
+        table.add_columns('.id', '.path', 'name', 'size',
+                          DateTimeColumn(title='Backup Date', field='created'),
+                          'checksum', 'encrypted', 'verify')
+        # rows arrive folders-first from get_table_query; sorting on the name column
+        # would order by its HTML, so disable client-side ordering entirely
+        table.table_options['ordering'] = False
+        table.table_options['stateSave'] = False
+
+    @staticmethod
+    def folder_row(row_id, name, url):
+        return {'id': row_id, 'path': '',
+                'name': f'<a href="{url}"><i class="fas fa-folder"></i> {escape(name)}</a>',
+                'size': '', 'created': None, 'checksum': '', 'encrypted': '', 'verify': ''}
+
+    def get_table_query(self, table, **kwargs):
+        if self.backup_dir is None:
+            return [self.folder_row(f'dir{index}', dest_name,
+                                    reverse('cloud_backup:backup_files', args=[index]))
+                    for index, (_source_dir, dest_name) in enumerate(self.backup.config.dirs)]
+        if self.dest_folder is None:
+            return []
+        rows = []
+        for sub in sorted(self.backup.storage.list_folders(self.dest_folder),
+                          key=lambda s: s['name'].lower()):
+            sub_rel = f"{self.sub_path}/{sub['name']}" if self.sub_path else sub['name']
+            rows.append(self.folder_row(
+                # the id column becomes the row's DOM id, which the datatables JS looks
+                # up with a jQuery selector - storage ids can be object keys whose '/'
+                # and '.' break the selector, so use a digest of the path instead
+                'd' + hashlib.md5(sub_rel.encode()).hexdigest(), sub['name'],
+                reverse('cloud_backup:backup_files_path', args=[self.backup_dir, sub_rel])))
+        verify_button = row_button('verify', 'Verify',
+                                   button_classes='btn btn-outline-primary btn-sm')['html']
+        # metadata is always fetched so the encrypted column is accurate and the
+        # checksum column shows the plaintext md5 for files backed up while
+        # encryption was on, even if it has since been turned off
+        for f in sorted(self.backup.storage.list_files(self.dest_folder, include_metadata=True),
+                        key=lambda s: s['name'].lower()):
+            rel_path = f"{self.sub_path}/{f['name']}" if self.sub_path else f['name']
+            rows.append({'id': hashlib.md5(rel_path.encode()).hexdigest(),
+                         'path': rel_path,
+                         'name': f'<i class="far fa-file"></i> {escape(f["name"])}',
+                         'size': f['size'],
+                         'created': f['created'],
+                         'checksum': BackupLocal.content_hash(f) or '',
+                         'encrypted': 'Yes' if (f.get('metadata') or {}).get('encrypted') else 'No',
+                         'verify': verify_button})
+        return rows
+
+    def row_verify(self, row_no, row_data, **_kwargs):
+        row = json.loads(row_data)
+        rel_path, checksum = row[1], row[5]
+        local_path = local_backup_path(self.source_dir, rel_path)
+        if local_path is None or not os.path.isfile(local_path):
+            badge = '<span class="badge badge-warning">Missing locally</span>'
+        elif not checksum:
+            badge = '<span class="badge badge-secondary">No stored checksum</span>'
+        elif BackupLocal.md5sum(local_path) == checksum:
+            badge = '<span class="badge badge-success"><i class="fas fa-check"></i> Match</span>'
+        else:
+            badge = '<span class="badge badge-danger">Changed</span>'
+        self.setup_tables()
+        self.add_command(overwrite_visible_cell(self.tables['files'], row_no, 'verify', badge))
+        return self.command_response()
+
+    def get_context_data(self, **kwargs):
+        self.add_page_command('ajax_post', data={'ajax': 'read_storage_info'})
+        return super().get_context_data(**kwargs)
+
+    def ajax_read_storage_info(self, **_kwargs):
+        if self.backup_dir is None:
+            html = f'{len(self.backup.config.dirs)} backup folder(s) configured'
+        elif self.dest_folder is None:
+            html = f'No backups found yet for {self.source_dir}'
+        else:
+            info = self.backup.storage.storage_info(self.dest_folder)
+            if info['web_link']:
+                location = '<a target="_blank" href="{}">{}</a>'.format(info['web_link'], info['name'])
+            else:
+                location = info['name']
+            source = self.source_dir if not self.sub_path else f'{self.source_dir}/{self.sub_path}'
+            html = f'Backup Folder {location} &mdash; backed up from {source}'
+        return self.command_response('html', selector='#storage_info', html=html)
+
+
+class BackupFilesView(BackupFilesBaseView):
 
     template_name = 'cloud_backup/backup.html'

@@ -335,12 +335,15 @@ The enhanced page views build the whole UI (menus, storage info and tables) into
 single HTML string, `{{ backup_content }}`, so it can be dropped into your own
 template. Subclass the base views and set `template_name`:
 
-    from cloud_backup.enhanced_views import BackupBaseView, SchemaTableBaseView
+    from cloud_backup.enhanced_views import BackupBaseView, BackupFilesBaseView, SchemaTableBaseView
 
     class MyBackupView(BackupBaseView):
         template_name = 'myapp/backup.html'
 
     class MySchemaTableView(SchemaTableBaseView):
+        template_name = 'myapp/backup.html'
+
+    class MyBackupFilesView(BackupFilesBaseView):
         template_name = 'myapp/backup.html'
 
 The template must include the ajax_helpers/datatables/modals libraries and the
@@ -361,7 +364,8 @@ Register the subclasses with `backup_urlpatterns` so the menu links and modals
 
     urlpatterns = [
         path('backup/', include((backup_urlpatterns(
-            backup_view=MyBackupView, schema_table_view=MySchemaTableView), 'cloud_backup'))),
+            backup_view=MyBackupView, schema_table_view=MySchemaTableView,
+            files_view=MyBackupFilesView), 'cloud_backup'))),
     ]
 
 The unbranded standard page remains the default when using
@@ -381,6 +385,34 @@ development machines where restoring is wanted. The `manage.py restore_db`
 command is not affected by this setting, so disaster recovery on a live server
 remains possible from the command line.
 
+**Browsing and verifying folder backups**
+
+When `BACKUP_DIRS` (or `S3_BACKUP_DIRS`) is configured, the enhanced management
+page shows a `Backup Files` button that backs up all configured folders without
+touching the database, and a single `Files` button opening a file browser. Its
+root level lists each configured backup directory as a folder; clicking through
+navigates the backed-up tree one level at a time (with breadcrumbs back up), and
+files show their size, backup date and checksum - the plaintext md5 recorded
+with the file at upload time (so it stays comparable when client-side encryption
+is enabled).
+
+The `Verify` button on each row re-hashes the file on the server's local disk
+and compares it with the stored checksum, reporting:
+
+- `Match` - the local file is identical to its backup
+- `Changed` - the local file no longer matches its backup
+- `Missing locally` - the local file has been deleted since it was backed up
+- `No stored checksum` - the backup has no comparable checksum (e.g. a large
+  multipart S3 upload made without md5 metadata)
+
+`Verify All Files` runs the same comparison over the whole directory as a
+celery task (the worker must be running) and reports a summary.
+
+The browser and verification are read-only, require the same `access_admin`
+permission as the rest of the management page, and always use the default
+backup config. Note that on an S3-compatible destination with client-side
+encryption enabled, listing the checksums costs one metadata request per file,
+so the page can be slow to load for very large trees.
 
 **Configure S3 folder backups**
 

@@ -5,6 +5,7 @@ from celery import shared_task
 from django.db import connection
 
 from .backup import Backup
+from .backup_local_files import BackupLocal
 from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,24 @@ try:
                 cursor.execute(f'CREATE SCHEMA "{drop_schema}"')
         Backup(StateLogger(self)).get_backup_db().restore_db_from_storage(file_id=slug['pk'])
         return {'commands': [ajax_command('message', text='Restore Complete'), ajax_command('reload')]}
+
+    @shared_task(bind=True)
+    def ajax_verify_files(self, *, slug, **_kwargs):
+        backup = Backup(StateLogger(self))
+        source_dir, dest_name = backup.config.dirs[int(slug['backup_dir'])]
+        local = BackupLocal(backup.storage, backup.config.root, backup.logger, config=backup.config)
+        results = local.verify_folder(source_dir, dest_name)
+        summary = (f"{results['matched']} matched, {len(results['changed'])} changed, "
+                   f"{len(results['missing'])} missing locally")
+        if results['no_checksum']:
+            summary += f", {len(results['no_checksum'])} without a stored checksum"
+        problems = results['changed'] + results['missing']
+        if problems:
+            listed = problems[:10]
+            summary += ': ' + ', '.join(listed)
+            if len(problems) > len(listed):
+                summary += f' and {len(problems) - len(listed)} more'
+        return {'commands': [ajax_command('message', text=f'Verify complete - {summary}')]}
 
 except ModuleNotFoundError:
     pass
