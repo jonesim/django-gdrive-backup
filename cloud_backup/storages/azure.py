@@ -62,7 +62,14 @@ class AzureStorage(BackupStorage):
                 files.append(f)
         return files
 
-    def walk(self, folder):
+    def list_folders(self, folder):
+        prefix = folder['id'] + '/'
+        return [self._folder_handle(blob.name.rstrip('/'))
+                for blob in self.container.walk_blobs(name_starts_with=prefix, delimiter='/')
+                if not hasattr(blob, 'size')]  # BlobPrefix entries are the sub-folders
+
+    def walk(self, folder, include_metadata=False):
+        # include_metadata is ignored - list_blobs always includes metadata below
         prefix = folder['id'] + '/'
         for blob in self.container.list_blobs(name_starts_with=prefix, include=['metadata']):
             relative = blob.name[len(prefix):]

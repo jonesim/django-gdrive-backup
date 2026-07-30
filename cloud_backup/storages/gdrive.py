@@ -70,7 +70,12 @@ class GDriveStorage(BackupStorage):
         return [self.normalise(f) for f in self._list_raw(folder, deleted=deleted, extra_q=extra_q)
                 if f.get('mimeType') != FOLDER_MIME_TYPE]
 
-    def walk(self, folder, path=''):
+    def list_folders(self, folder):
+        return [self._folder_handle(f) for f in self._list_raw(folder)
+                if f.get('mimeType') == FOLDER_MIME_TYPE]
+
+    def walk(self, folder, path='', include_metadata=False):
+        # include_metadata is ignored - listings already carry appProperties
         for f in self._list_raw(folder):
             if f.get('mimeType') == FOLDER_MIME_TYPE:
                 sub_path = os.path.join(path, f['name']).replace(os.sep, '/')

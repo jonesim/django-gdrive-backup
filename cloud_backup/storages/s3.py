@@ -110,7 +110,16 @@ class S3Storage(BackupStorage):
                     files.append(f)
         return files
 
-    def walk(self, folder):
+    def list_folders(self, folder):
+        prefix = folder['id'] + '/'
+        folders = []
+        for page in self.s3.get_paginator('list_objects_v2').paginate(Bucket=self.bucket,
+                                                                      Prefix=prefix, Delimiter='/'):
+            for p in page.get('CommonPrefixes', []):
+                folders.append(self._folder_handle(p['Prefix'].rstrip('/')))
+        return folders
+
+    def walk(self, folder, include_metadata=False):
         prefix = folder['id'] + '/'
         for page in self.s3.get_paginator('list_objects_v2').paginate(Bucket=self.bucket, Prefix=prefix):
             for s3_object in page.get('Contents', []):
@@ -118,8 +127,9 @@ class S3Storage(BackupStorage):
                     continue
                 relative = s3_object['Key'][len(prefix):]
                 path = relative.rsplit('/', 1)[0] if '/' in relative else ''
+                metadata = self._head_metadata(s3_object['Key']) if include_metadata else None
                 yield path, self.normalise(s3_object['Key'], s3_object['Size'], s3_object['ETag'],
-                                           s3_object['LastModified'])
+                                           s3_object['LastModified'], metadata=metadata)
 
     def get_file(self, file_id):
         try:

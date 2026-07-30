@@ -50,9 +50,16 @@ class BackupStorage:
         """
         raise NotImplementedError
 
-    def walk(self, folder):
+    def list_folders(self, folder):
+        """List the sub-folders directly inside a folder as folder handles
+        (each usable with list_files/list_folders)."""
+        raise NotImplementedError
+
+    def walk(self, folder, include_metadata=False):
         """Yield (relative_path, file_dict) for every file under folder, recursively.
-        relative_path is '' for direct children, otherwise 'sub/folders'."""
+        relative_path is '' for direct children, otherwise 'sub/folders'.
+        include_metadata guarantees 'metadata' is populated (may cost extra requests
+        on backends that can't list metadata)."""
         raise NotImplementedError
 
     def get_file(self, file_id):
