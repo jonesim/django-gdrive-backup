@@ -21,7 +21,7 @@ offsite store plus an unencrypted database copy for a staging server:
 Config keys: storage (BACKUP_STORAGE-style dict), encryption (True = derive from the
 encrypted-credentials SETTINGS_KEY, or a urlsafe-base64 32-byte key string), db
 (include the database, default True), db_dir, dirs, s3_dirs, retention,
-changed_files. A key absent from a named config inherits the corresponding legacy
+changed_files, db_tiers. A key absent from a named config inherits the corresponding legacy
 global setting (BACKUP_STORAGE, BACKUP_ENCRYPTION, BACKUP_DIRS, ...), which is also
 how installations without BACKUP_CONFIGS keep working unchanged - their globals
 simply become the 'default' config.
@@ -33,6 +33,7 @@ scheduling the tasks with kwargs={'config': 'staging'}.
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
+from .db_tiers import DEFAULT_EXPIRE_DAYS
 from .encryption import resolve_key
 from .storages import check_storage_settings
 
@@ -60,6 +61,30 @@ class BackupConfig:
         self.dirs = config.get('dirs', getattr(settings, 'BACKUP_DIRS', []))
         self.s3_dirs = config.get('s3_dirs', getattr(settings, 'S3_BACKUP_DIRS', []))
         self.retention = config.get('retention', getattr(settings, 'BACKUP_DB_RETENTION', None))
+        db_tiers = config.get('db_tiers', getattr(settings, 'BACKUP_DB_TIERS', False))
+        # True or a dict of options - only False/None turn it off
+        self.db_tiers = db_tiers is not False and db_tiers is not None
+        # how far back the web UI lists hourly dumps: a listing window, NOT a retention
+        # setting - the bucket lifecycle rule is what deletes them
+        tier_options = db_tiers if isinstance(db_tiers, dict) else {}
+        self.db_tier_hourly_days = tier_options.get('hourly_days')
+        # how long each tier should be kept, for the setup page to build lifecycle rules
+        # from and check the real ones against - None keeps a tier indefinitely
+        self.db_tier_expire_days = dict(DEFAULT_EXPIRE_DAYS, **(tier_options.get('expire_days') or {}))
+        if self.db_tiers:
+            unknown = set(self.db_tier_expire_days) - set(DEFAULT_EXPIRE_DAYS)
+            if unknown:
+                raise ImproperlyConfigured(f"db_tiers expire_days for backup config '{name}' has unknown "
+                                           f'tier(s) {", ".join(sorted(unknown))} - expected '
+                                           f'{", ".join(DEFAULT_EXPIRE_DAYS)}')
+            if self.storage_settings.get('backend', 'gdrive') != 's3':
+                raise ImproperlyConfigured(f"db_tiers for backup config '{name}' needs the 's3' storage backend - "
+                                           f'the tiers are managed by bucket lifecycle rules')
+            if self.retention:
+                raise ImproperlyConfigured(
+                    f"db_tiers for backup config '{name}' replaces client-side pruning, but retention is set"
+                    f"{'' if 'retention' in config else ' (inherited from BACKUP_DB_RETENTION)'} - add "
+                    f"'retention': [] to the config to let the bucket lifecycle rules do the pruning")
         # fails fast on a bad key before anything is backed up
         self.encryption_key = resolve_key(config.get('encryption',
                                                      getattr(settings, 'BACKUP_ENCRYPTION', None)))

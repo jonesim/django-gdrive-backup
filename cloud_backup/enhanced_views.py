@@ -146,9 +146,10 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
         if not self.schema and len(self.schemas) > 1:
             self.add_table('schemas')
 
-    @staticmethod
-    def setup_files(table):
+    def setup_files(self, table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size', 'encrypted',
+                          # only tiered configs have anything to show here
+                          DatatableColumn(column_name='tier', field='tier', enabled=self.backup.config.db_tiers),
                           DateTimeColumn(title='Backup Date', field='created'),
                           DatatableColumn(column_name='drop_restore', enabled=allowed_to_restore(),
                                           render=[row_button('drop_restore', 'Drop Restore',
@@ -248,9 +249,9 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
         self.add_table('files')
         self.add_table('schema_tables')
 
-    @staticmethod
-    def setup_files(table):
+    def setup_files(self, table):
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size', 'encrypted',
+                          DatatableColumn(column_name='tier', field='tier', enabled=self.backup.config.db_tiers),
                           DateTimeColumn(title='Backup Date', field='created'),
                           restore_table_button('Restore Table'))
         table.sort('-created')

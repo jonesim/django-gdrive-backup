@@ -30,6 +30,15 @@ def empty_trash(config=None):
 
 
 @shared_task
+def promote_db_tiers(config=None):
+    """Copy the newest hourly database dump of each finished day into the daily tier, and
+    the last daily dump of each finished month into the monthly tier. Schedule this daily
+    whenever a config uses db_tiers - without it the hourly tier expires with nothing
+    behind it."""
+    Backup(config=config).promote_db_tiers()
+
+
+@shared_task
 def extend_retention(config=None):
     """Top up object-lock retention so every file backup keeps at least the configured
     min_days of protection. Schedule daily via beat (interval must be shorter than

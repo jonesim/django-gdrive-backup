@@ -5,6 +5,7 @@ from django.conf import settings
 from .backup_db import BackupDb
 from .backup_local_files import BackupLocal
 from .config import BackupConfig, CHANGED_PROTECT, get_config
+from .db_tiers import DEFAULT_CATCHUP_DAYS, DbTierPromoter, TIER_DIRS
 from .sql_functions import get_schemas
 from .storages import get_storage
 
@@ -63,6 +64,12 @@ class Backup:
                 db.backup_db_to_storage()
                 if not sub_folder and self.config.retention:
                     db.prune_old_backups(self.config.retention)
+            if not sub_folder and self.config.db_tiers:
+                # promote here as well as on a schedule: the hourly tier expires by
+                # itself, so a promotion job that silently stops running loses every
+                # backup once the lifecycle rule catches up. Whatever else is broken,
+                # a run that just uploaded a dump can promote yesterday's
+                self.promote_db_tiers(resume=True, warn_empty=False)
 
         if include_folders and self.config.dirs:
             b = BackupLocal(self.storage, self.config.root, self.logger, config=self.config)
@@ -88,6 +95,42 @@ class Backup:
                 # unchanged files are safely backed up before the run is marked failed
                 raise ChangedFilesError(f'{len(changed_files)} source files changed since being backed up '
                                         f'and were NOT backed up: {summary}')
+
+    def promote_db_tiers(self, as_of=None, days=None, resume=False, warn_empty=True):
+        """Promote database dumps from the hourly tier into daily and monthly with
+        server-side copies, so the bucket's lifecycle rules can keep them for different
+        lengths of time. Needs no database, and runs at the end of every db backup as
+        well as from the scheduled task - see backup_db_and_folders.
+
+        :param resume: cheap mode for the in-backup call - see DbTierPromoter.promote
+        """
+        if not self.config.db_tiers:
+            self.logger.info('db_tiers is not enabled for this config - nothing to promote')
+            return
+        try:
+            db_folder = self.storage.ensure_folder(self.config.db_dir)
+            # sub-folders come from the storage rather than get_schemas() so dropped
+            # schemas and -sub_folder destinations are promoted too
+            folders = [db_folder] + [f for f in self.storage.list_folders(db_folder)
+                                     if f['name'] not in TIER_DIRS]
+        except Exception as e:  # noqa: BLE001 - never fail a completed backup over this
+            self.logger.warning(f'Could not promote backup tiers: {e}')
+            return
+        stats = {'daily': 0, 'monthly': 0, 'skipped': 0, 'empty_days': [], 'errors': []}
+        for folder in folders:
+            promoter = DbTierPromoter(self.storage, folder, self.logger,
+                                      lock_days=self.storage.lock_days('db'))
+            promoted = promoter.promote(as_of=as_of, days=days or DEFAULT_CATCHUP_DAYS,
+                                        resume=resume, warn_empty=warn_empty)
+            for key, value in promoted.items():
+                stats[key] = stats[key] + value
+        if stats['daily'] or stats['monthly'] or stats['errors'] or not resume:
+            # the in-backup call runs every time and usually has nothing to say
+            self.logger.info(f"Backup tiers: {stats['daily']} promoted to daily, "
+                             f"{stats['monthly']} to monthly, {stats['skipped']} already promoted")
+        for error in stats['errors']:
+            self.logger.warning(f'Not promoted: {error}')
+        return stats
 
     def extend_file_retention(self, workers=8):
         """Ensure everything under the backup root keeps at least the configured

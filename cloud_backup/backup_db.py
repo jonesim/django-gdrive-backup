@@ -8,11 +8,11 @@ import requests
 
 from .base_backup import BaseBackup
 from .compression import decompress
+from .db_tiers import (DAILY, DB_FILE_EXTENSIONS, DUMP_EXTENSION, HOURLY, LEGACY_STAMP,  # noqa: F401 re-export
+                       MONTHLY, TIER_DIRS, backup_time, hourly_dir, hourly_name, tier_of, tier_prefixes)
 from .encryption import decrypt_in_place, encrypt_file
 from .prune_backups import PruneBackups
 from .sql_functions import delete_table
-
-DUMP_EXTENSION = 'dump'
 
 
 def get_ip_address():
@@ -35,9 +35,6 @@ class DatabaseBackupError(Exception):
     pass
 
 
-DB_FILE_EXTENSIONS = ('.' + DUMP_EXTENSION, '.bz2', '.gz', '.sql')
-
-
 class BackupDb(BaseBackup):
 
     def __init__(self, storage, backup_dir, database, local_backup_dir, logger, schema=None,
@@ -54,13 +51,20 @@ class BackupDb(BaseBackup):
         if self.postgres_backup.table:
             metadata['schema'] = self.postgres_backup.schema
             metadata['table'] = self.postgres_backup.table
-            filename = f'table_{self.postgres_backup.table}'
+            base_name = f'table_{self.postgres_backup.table}'
         elif self.postgres_backup.schema:
             metadata['schema'] = self.postgres_backup.schema
-            filename = f'schema_{self.postgres_backup.schema}'
+            base_name = f'schema_{self.postgres_backup.schema}'
         else:
-            filename = 'db'
-        filename += f'_{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}.{DUMP_EXTENSION}'
+            base_name = 'db'
+        # one clock for both the file name and the date partition it goes in
+        now = datetime.datetime.today()
+        if self.config.db_tiers:
+            upload_folder = self.storage.ensure_folder(hourly_dir(now), parent=self.base_backup_dir)
+            filename = hourly_name(base_name, now)
+        else:
+            upload_folder = self.base_backup_dir
+            filename = f'{base_name}_{now.strftime(LEGACY_STAMP)}.{DUMP_EXTENSION}'
         # only the unique name is wanted - backup_db writes to <name>.dump, so the placeholder
         # file itself is closed and removed rather than left open for the life of the process
         backup_stream = NamedTemporaryFile(delete=False)
@@ -84,7 +88,7 @@ class BackupDb(BaseBackup):
                 metadata['md5'] = self.md5sum(backup_filename)
             self.logger.info('Copying backup to storage')
             with open(upload_filename, 'rb') as compressed_file:
-                stored_file = self.storage.upload(self.base_backup_dir, filename, compressed_file,
+                stored_file = self.storage.upload(upload_folder, filename, compressed_file,
                                                   metadata=metadata,
                                                   lock_days=self.storage.lock_days('db'))
             if not self.check_upload(stored_file, upload_filename):
@@ -104,11 +108,68 @@ class BackupDb(BaseBackup):
             delete_table(file_info['metadata']['schema'], file_info['metadata']['table'])
         self.postgres_backup.restore_db(os.path.join(self.local_backup_dir, local_name))
 
+    def tier_prefixes(self):
+        """{tier: key prefix} for lifecycle-rule reporting, or None when this config does
+        not use the lifecycle-managed tiers."""
+        if not self.config.db_tiers:
+            return None
+        return tier_prefixes(self.base_backup_dir['id'])
+
+    def tier_policy(self):
+        """The lifecycle-rule arguments for storage.protection_info() - where each tier
+        lives and how long it is meant to be kept."""
+        return {'tier_prefixes': self.tier_prefixes(),
+                'expire_days': self.config.db_tier_expire_days if self.config.db_tiers else None}
+
     def get_db_backup_files(self, deleted=False, metadata_filter=None):
+        # the flat listing is delimited, so it picks up dumps written before tiering was
+        # turned on without ever seeing the tier folders
         files = self.storage.list_files(self.base_backup_dir, metadata_filter=metadata_filter,
                                         deleted=deleted, include_metadata=True)
+        if self.config.db_tiers and not deleted:
+            files += self.get_tiered_backup_files(metadata_filter)
+            for f in files:
+                self.set_tier_info(f)
         return sorted((f for f in files if f['name'].endswith(DB_FILE_EXTENSIONS)),
                       key=lambda f: f['created'], reverse=True)
+
+    def get_tiered_backup_files(self, metadata_filter=None):
+        files = []
+        for tier in (DAILY, MONTHLY):
+            files += self.storage.list_files(self.storage.ensure_folder(tier, parent=self.base_backup_dir),
+                                             metadata_filter=metadata_filter, include_metadata=True)
+        if self.config.db_tier_hourly_days:
+            # listing the day folders in the window is cheaper than walking the whole
+            # hourly tier, which would read metadata for days nobody is going to see
+            today = datetime.date.today()
+            for offset in range(self.config.db_tier_hourly_days + 1):
+                day_folder = self.storage.ensure_folder(hourly_dir(today - datetime.timedelta(days=offset)),
+                                                        parent=self.base_backup_dir)
+                files += self.storage.list_files(day_folder, metadata_filter=metadata_filter,
+                                                 include_metadata=True)
+        else:
+            hourly_folder = self.storage.ensure_folder(HOURLY, parent=self.base_backup_dir)
+            files += [f for _path, f in self.storage.walk(hourly_folder, include_metadata=True)
+                      if self.storage.matches_metadata(f, metadata_filter)]
+        return files
+
+    def set_tier_info(self, f):
+        """Label the tier from the key and make 'created' the time the dump was taken -
+        for a promoted copy the storage timestamp is when the copy ran, a day or a month
+        after the dump itself."""
+        f['metadata'] = f.get('metadata') or {}
+        f['metadata']['tier'] = tier_of(f['id'], self.base_backup_dir['id']) or ''
+        taken = None
+        stamp = f['metadata'].get('backup_time')
+        if stamp:
+            try:
+                taken = datetime.datetime.fromisoformat(stamp)
+            except ValueError:
+                pass
+        if taken is None:
+            taken = backup_time(f['name'])
+        if taken is not None:
+            f['created'] = taken
 
     def get_latest_db_backup(self):
         files = self.get_db_backup_files()

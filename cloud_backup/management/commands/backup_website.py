@@ -1,3 +1,5 @@
+import datetime
+
 from django.core.management.base import BaseCommand
 
 from cloud_backup.backup import Backup
@@ -52,6 +54,20 @@ class Command(BaseCommand):
                             default=False,
                             help='Extend object-lock retention on existing backups instead of backing up')
 
+        parser.add_argument('--promote_tiers',
+                            action='store_true',
+                            default=False,
+                            help='Promote database dumps between the db_tiers hourly/daily/monthly '
+                                 'tiers instead of backing up')
+
+        parser.add_argument('--as_of',
+                            type=str,
+                            help='Promote as if today were this date (YYYY-MM-DD) - for backfilling')
+
+        parser.add_argument('--days',
+                            type=int,
+                            help='How many days back --promote_tiers looks for dumps to promote')
+
         parser.add_argument('--config',
                             type=str,
                             help='Which BACKUP_CONFIGS entry to use (default: the default config)')
@@ -59,6 +75,10 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if options['extend_retention']:
             Backup(logger=Logger(), config=options['config']).extend_file_retention()
+            return
+        if options['promote_tiers']:
+            as_of = datetime.datetime.strptime(options['as_of'], '%Y-%m-%d').date() if options['as_of'] else None
+            Backup(logger=Logger(), config=options['config']).promote_db_tiers(as_of=as_of, days=options['days'])
             return
         folder_kwargs = {}
         if options['db_only']:

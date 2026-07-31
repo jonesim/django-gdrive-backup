@@ -84,6 +84,13 @@ class BackupStorage:
         the backend has one."""
         raise NotImplementedError('This storage backend cannot keep file versions')
 
+    def copy_stored_file(self, stored_file, folder, name, extra_metadata=None, lock_days=None):
+        """Server-side copy of an already stored file to another name/folder in the same
+        destination - no download and no re-upload, so no egress. The file's metadata is
+        preserved with extra_metadata merged over it. Returns the normalised dict of the
+        new file."""
+        raise NotImplementedError('This storage backend cannot copy stored files server-side')
+
     @staticmethod
     def version_name(name):
         return f'{name}.{datetime.datetime.today().strftime("%Y_%m_%d_%H_%M")}'

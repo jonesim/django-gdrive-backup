@@ -35,6 +35,9 @@ class S3Storage(BackupStorage):
     """
 
     supports_trash = False
+    metadata_workers = 8
+    # CopyObject's ceiling - above it the copy has to be done in parts
+    copy_object_limit = 5 * 1024 * 1024 * 1024
 
     def __init__(self, bucket, access_key_id=None, secret_key=None, endpoint_url=None,
                  region=None, b2=False, lock=None):
@@ -92,22 +95,31 @@ class S3Storage(BackupStorage):
     def _head_metadata(self, key):
         return self.s3.head_object(Bucket=self.bucket, Key=key).get('Metadata', {})
 
+    def _metadata_map(self, keys):
+        """Metadata for several objects at once. S3 needs a HEAD per object and a
+        listing can cover hundreds of them, so they go out in parallel."""
+        if not keys:
+            return {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.metadata_workers, len(keys))) as pool:
+            return dict(zip(keys, pool.map(self._head_metadata, keys)))
+
     def list_files(self, folder, metadata_filter=None, deleted=False, include_metadata=False):
         if deleted:
             return []
         prefix = folder['id'] + '/'
-        need_metadata = include_metadata or bool(metadata_filter)
-        files = []
+        objects = []
         for page in self.s3.get_paginator('list_objects_v2').paginate(Bucket=self.bucket,
                                                                       Prefix=prefix, Delimiter='/'):
-            for s3_object in page.get('Contents', []):
-                if s3_object['Key'] == prefix:
-                    continue  # zero-byte directory marker
-                metadata = self._head_metadata(s3_object['Key']) if need_metadata else None
-                f = self.normalise(s3_object['Key'], s3_object['Size'], s3_object['ETag'],
-                                   s3_object['LastModified'], metadata=metadata)
-                if self.matches_metadata(f, metadata_filter):
-                    files.append(f)
+            objects += [s3_object for s3_object in page.get('Contents', [])
+                        if s3_object['Key'] != prefix]  # skip the zero-byte directory marker
+        metadata = self._metadata_map([s3_object['Key'] for s3_object in objects]) \
+            if include_metadata or metadata_filter else {}
+        files = []
+        for s3_object in objects:
+            f = self.normalise(s3_object['Key'], s3_object['Size'], s3_object['ETag'],
+                               s3_object['LastModified'], metadata=metadata.get(s3_object['Key']))
+            if self.matches_metadata(f, metadata_filter):
+                files.append(f)
         return files
 
     def list_folders(self, folder):
@@ -122,14 +134,16 @@ class S3Storage(BackupStorage):
     def walk(self, folder, include_metadata=False):
         prefix = folder['id'] + '/'
         for page in self.s3.get_paginator('list_objects_v2').paginate(Bucket=self.bucket, Prefix=prefix):
-            for s3_object in page.get('Contents', []):
-                if s3_object['Key'].endswith('/'):
-                    continue
+            objects = [s3_object for s3_object in page.get('Contents', [])
+                       if not s3_object['Key'].endswith('/')]
+            metadata = self._metadata_map([s3_object['Key'] for s3_object in objects]) \
+                if include_metadata else {}
+            for s3_object in objects:
                 relative = s3_object['Key'][len(prefix):]
                 path = relative.rsplit('/', 1)[0] if '/' in relative else ''
-                metadata = self._head_metadata(s3_object['Key']) if include_metadata else None
                 yield path, self.normalise(s3_object['Key'], s3_object['Size'], s3_object['ETag'],
-                                           s3_object['LastModified'], metadata=metadata)
+                                           s3_object['LastModified'],
+                                           metadata=metadata.get(s3_object['Key']))
 
     def get_file(self, file_id):
         try:
@@ -159,6 +173,29 @@ class S3Storage(BackupStorage):
         self.s3.copy({'Bucket': self.bucket, 'Key': stored_file['id']}, self.bucket, version_key,
                      ExtraArgs=self._lock_args(lock_days) or None, Config=self.transfer_config)
         return version_key
+
+    def copy_stored_file(self, stored_file, folder, name, extra_metadata=None, lock_days=None):
+        key = f"{folder['id']}/{name}"
+        head = self.s3.head_object(Bucket=self.bucket, Key=stored_file['id'])
+        metadata = dict(head.get('Metadata') or {},
+                        **{k: str(v) for k, v in (extra_metadata or {}).items()})
+        source = {'Bucket': self.bucket, 'Key': stored_file['id']}
+        extra_args = {'Metadata': metadata, **self._lock_args(lock_days)}
+        if head.get('ContentType'):
+            extra_args['ContentType'] = head['ContentType']
+        if head['ContentLength'] <= self.copy_object_limit:
+            self.s3.copy_object(Bucket=self.bucket, Key=key, CopySource=source,
+                                MetadataDirective='REPLACE', **extra_args)
+        else:
+            # the managed copy switches to a multipart copy, which starts from
+            # CreateMultipartUpload and so takes the metadata from ExtraArgs - there is
+            # no MetadataDirective on that path and nothing is inherited from the source
+            self.s3.copy(source, self.bucket, key, ExtraArgs=extra_args, Config=self.transfer_config)
+        copied = self.get_file(key)
+        if copied['size'] != head['ContentLength']:
+            raise IOError(f'Copy of {stored_file["id"]} to {key} is {copied["size"]} bytes, '
+                          f'expected {head["ContentLength"]}')
+        return copied
 
     def extend_retention(self, folder, min_days, workers=8):
         """Ensure every object under folder keeps at least min_days of object-lock

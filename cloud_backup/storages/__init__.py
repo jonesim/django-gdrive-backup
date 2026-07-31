@@ -16,7 +16,7 @@ def backup_root():
     return storage_settings().get('root', getattr(settings, 'BACKUP_ROOT', 'django_backup'))
 
 
-CONFIG_ONLY_KEYS = ('encryption', 'changed_files', 'retention', 'db', 'db_dir', 'dirs', 's3_dirs')
+CONFIG_ONLY_KEYS = ('encryption', 'changed_files', 'retention', 'db', 'db_dir', 'dirs', 's3_dirs', 'db_tiers')
 
 
 def check_storage_settings(config):
