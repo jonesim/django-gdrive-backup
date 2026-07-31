@@ -1,0 +1,11 @@
+{{ menus.breadcrumbs.render }}
+<div class="m-4">
+    {{ menus.buttons.render }}
+    <p class="text-muted">Each configured backup destination is checked below. Nothing on this page
+        changes anything &mdash; where something is missing it shows the commands to run.</p>
+    {% for c in configs %}
+        <div class="card my-3" id="setup_config_{{ c.index }}">
+            <div class="card-body">Checking {{ c.name }} &hellip;</div>
+        </div>
+    {% endfor %}
+</div>

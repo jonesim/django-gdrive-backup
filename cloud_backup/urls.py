@@ -10,18 +10,21 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
     from . import enhanced_views as views
     from . import modals as modals
 
-    def backup_urlpatterns(backup_view=None, schema_table_view=None, files_view=None):
+    def backup_urlpatterns(backup_view=None, schema_table_view=None, files_view=None, setup_view=None):
         """Full enhanced pattern list with the page views swappable, so a branded
         subclass keeps the URL names the menus and modals reverse. Host usage:
         path('backup/', include((backup_urlpatterns(backup_view=MyBackupView), 'cloud_backup')))"""
         backup_view = backup_view or views.BackupView
         schema_table_view = schema_table_view or views.SchemaTableView
         files_view = files_view or views.BackupFilesView
+        setup_view = setup_view or views.StorageSetupView
         return [
             path('', backup_view.as_view(), name='backup_info'),
             path('files/', files_view.as_view(), name='backup_files_root'),
             path('files/<int:backup_dir>/', files_view.as_view(), name='backup_files'),
             path('files/<int:backup_dir>/<path:sub_path>/', files_view.as_view(), name='backup_files_path'),
+            # single-segment paths must stay above <str:schema>, which matches anything
+            path('setup/', setup_view.as_view(), name='storage_setup'),
             path('modal/verify_files/<str:slug>/', modals.AdminTaskModal.as_view(task=ajax_verify_files),
                  name='verify_files'),
             path('<str:schema>/', backup_view.as_view(), name='schema_info'),

@@ -9,6 +9,7 @@ import requests
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 
+from ..db_tiers import DEFAULT_EXPIRE_DAYS
 from .base import BackupStorage, StorageFileNotFound
 
 
@@ -263,26 +264,170 @@ class S3Storage(BackupStorage):
         return {'name': name, 'web_link': None, 'used': None, 'limit': None}
 
     @staticmethod
-    def _protection_unknown(label, error):
-        code = error.response.get('Error', {}).get('Code') or type(error).__name__
-        return {'label': label, 'status': 'Unknown', 'detail': f'could not query ({code})'}
+    def _protection_unknown(label, error, capability=None):
+        """:param capability: the B2 key capability this query needs, named in the row
+        when the destination refuses it - 'AccessDenied' on its own sends people looking
+        at bucket policy for what is really a missing capability on the key"""
+        code = getattr(error, 'response', {}).get('Error', {}).get('Code') or type(error).__name__
+        detail = f'could not query ({code})'
+        if capability and code in ('AccessDenied', 'Forbidden', 'Unauthorized', '403'):
+            detail += f' - a Backblaze key needs the {capability} capability for this'
+        # not a fault in itself, but nothing below it can be trusted either
+        return {'label': label, 'status': 'Unknown', 'action': 'warn', 'detail': detail}
 
-    def protection_info(self):
+    @staticmethod
+    def _rule_prefix(rule):
+        """A lifecycle rule's key prefix, across the current and legacy shapes. An empty
+        prefix covers the whole bucket."""
+        if 'Prefix' in rule:
+            return rule['Prefix']
+        rule_filter = rule.get('Filter') or {}
+        if 'And' in rule_filter:
+            return rule_filter['And'].get('Prefix', '')
+        return rule_filter.get('Prefix', '')
+
+    @staticmethod
+    def _rule_days(rule):
+        return (rule.get('Expiration') or {}).get('Days')
+
+    @staticmethod
+    def _rule_noncurrent_days(rule):
+        return (rule.get('NoncurrentVersionExpiration') or {}).get('NoncurrentDays')
+
+    @staticmethod
+    def days(number):
+        return f'{number} day' if number == 1 else f'{number} days'
+
+    def lifecycle_rules(self):
+        """The bucket's enabled lifecycle rules as plain dicts - [] when it has none
+        configured. The caller has to expect a failure: not every S3-compatible service
+        implements the call, and a backup credential may well not be allowed to read the
+        bucket configuration."""
+        try:
+            rules = self.s3.get_bucket_lifecycle_configuration(Bucket=self.bucket).get('Rules', [])
+        except ClientError as e:
+            if 'NoSuchLifecycleConfiguration' in e.response.get('Error', {}).get('Code', ''):
+                return []
+            raise
+        # a service can express one of its own rules as several S3 rules, so keep every
+        # field that says what a rule does - a rule rendered with no detail at all just
+        # looks like a duplicate of the one above it
+        return [{'id': rule.get('ID') or '', 'prefix': self._rule_prefix(rule),
+                 'days': self._rule_days(rule), 'noncurrent_days': self._rule_noncurrent_days(rule),
+                 'delete_markers': bool((rule.get('Expiration') or {}).get('ExpiredObjectDeleteMarker')),
+                 'abort_days': (rule.get('AbortIncompleteMultipartUpload')
+                                or {}).get('DaysAfterInitiation')}
+                for rule in rules if rule.get('Status') == 'Enabled']
+
+    def rule_detail(self, rule):
+        parts = [f"expire after {self.days(rule['days'])}" if rule['days'] else None,
+                 f"previous versions after {self.days(rule['noncurrent_days'])}"
+                 if rule['noncurrent_days'] else None,
+                 'delete markers removed' if rule['delete_markers'] else None,
+                 f"abandoned uploads after {self.days(rule['abort_days'])}" if rule['abort_days'] else None]
+        return ', '.join(part for part in parts if part) or 'nothing expires'
+
+    @staticmethod
+    def tier_expiry(rules, prefix):
+        """The shortest expiry rule covering a tier prefix, or None. Matching is by
+        prefix, so a rule on a parent folder covers the tier but a rule on a sibling
+        (a per-schema tier folder) does not."""
+        matched = [rule for rule in rules if rule['days'] and prefix.startswith(rule['prefix'])]
+        return min(matched, key=lambda rule: rule['days']) if matched else None
+
+    def lifecycle_info(self, tier_prefixes=None, versioned=False, expire_days=None):
+        """:param expire_days: {tier: days the tier should be kept, or None for
+        indefinitely} - each tier's real rule is reported against what was asked for.
+        Defaults to the standard tier policy rather than to "keep everything", or a
+        correct rule on the hourly tier would be reported as a problem."""
+        expire_days = DEFAULT_EXPIRE_DAYS if expire_days is None else expire_days
+        try:
+            rules = self.lifecycle_rules()
+        except Exception as e:
+            return [self._protection_unknown('Lifecycle rules', e, capability='readBucketLifecycleRules')]
         protection = []
+        for rule in rules:
+            protection.append({'label': f"Lifecycle {rule['prefix'] or '(whole bucket)'}",
+                               'status': 'Enabled', 'detail': self.rule_detail(rule)})
+        for tier, prefix in (tier_prefixes or {}).items():
+            protection.append(self._tier_row(tier, prefix, rules, versioned, expire_days.get(tier)))
+        return protection
+
+    def _tier_row(self, tier, prefix, rules, versioned, wanted):
+        """One tier's rule measured against what the config asked for. 'action' marks the
+        rows that mean something has to be done - the rest of protection_info is context
+        (Object Lock off is the normal state for a lifecycle-managed bucket, not a fault)."""
+        label = f'Lifecycle {tier} dumps'
+        rule = self.tier_expiry(rules, prefix)
+        if rule is None:
+            if wanted is None:
+                return {'label': label, 'status': 'Enabled', 'detail': 'kept - no expiry rule, as intended'}
+            return {'label': label, 'status': 'Disabled', 'action': 'fix',
+                    'detail': f'no lifecycle rule for {prefix} - {tier} dumps will accumulate forever '
+                              f'instead of expiring after {self.days(wanted)}'}
+        if wanted is None:
+            # something expires the tier that is meant to be kept - usually a catch-all
+            # rule on the whole bucket, which is how an archive quietly disappears
+            return {'label': label, 'status': 'Disabled', 'action': 'fix',
+                    'detail': f"rule '{rule['id']}' expires them after {self.days(rule['days'])} - {tier} "
+                              f'dumps are meant to be kept'}
+        if rule['days'] < wanted:
+            return {'label': label, 'status': 'Disabled', 'action': 'fix',
+                    'detail': f"rule '{rule['id']}' expires them after {self.days(rule['days'])}, sooner "
+                              f'than the {self.days(wanted)} this config asks for'}
+        if versioned and not rule['noncurrent_days']:
+            # B2 (and any versioned bucket) only hides the file on expiry - without a
+            # noncurrent rule the hidden version stays and goes on being billed
+            return {'label': label, 'status': 'Disabled', 'action': 'fix',
+                    'detail': f"expire after {self.days(rule['days'])}, but the hidden versions are never "
+                              f'deleted - they keep being charged for'}
+        detail = f"expire after {self.days(rule['days'])}"
+        if rule['noncurrent_days']:
+            detail += f", hidden versions deleted after {self.days(rule['noncurrent_days'])}"
+        if rule['days'] > wanted:
+            return {'label': label, 'status': 'Suspended', 'action': 'warn',
+                    'detail': detail + f' - longer than the {self.days(wanted)} this config asks for'}
+        return {'label': label, 'status': 'Enabled', 'detail': detail}
+
+    def destination_status(self, root=None):
+        try:
+            self.s3.head_bucket(Bucket=self.bucket)
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            if code in ('404', 'NoSuchBucket', 'NotFound'):
+                return {'state': 'missing', 'label': 'Bucket', 'status': 'Disabled',
+                        'detail': f'{self.bucket} does not exist'}
+            if code in ('403', 'AccessDenied', 'Forbidden'):
+                # a bucket-restricted key answers 403 for every other name, including
+                # names that do not exist, so this is never proof the bucket is there
+                return {'state': 'denied', 'label': 'Bucket', 'status': 'Unknown',
+                        'detail': f'these credentials cannot see {self.bucket} - it may not exist, or the '
+                                  f'key may be restricted to another bucket'}
+            return {'state': 'unknown', 'label': 'Bucket', 'status': 'Unknown',
+                    'detail': f'could not check {self.bucket} ({code or type(e).__name__})'}
+        except Exception as e:
+            return {'state': 'unknown', 'label': 'Bucket', 'status': 'Unknown',
+                    'detail': f'could not check {self.bucket} ({type(e).__name__})'}
+        return {'state': 'ok', 'label': 'Bucket', 'status': 'Enabled', 'detail': f'{self.bucket} is accessible'}
+
+    def protection_info(self, tier_prefixes=None, expire_days=None):
+        protection = []
+        versioned = False
         try:
             status = self.s3.get_bucket_versioning(Bucket=self.bucket).get('Status') or 'Disabled'
+            versioned = status == 'Enabled'
             protection.append({'label': 'Bucket versioning', 'status': status,
                                'detail': 'overwritten and deleted objects are kept as previous versions'
                                          if status == 'Enabled' else None})
         except ClientError as e:
-            protection.append(self._protection_unknown('Bucket versioning', e))
+            protection.append(self._protection_unknown('Bucket versioning', e, capability='readBuckets'))
         worm = 'Object Lock (WORM)'
         try:
             config = self.s3.get_object_lock_configuration(Bucket=self.bucket)
             config = config.get('ObjectLockConfiguration', {})
             enabled = config.get('ObjectLockEnabled') == 'Enabled'
             retention = config.get('Rule', {}).get('DefaultRetention', {})
-            detail = None
+            detail = None if enabled else 'not enabled on this bucket'
             if retention:
                 period = (f"{retention['Days']} days" if retention.get('Days')
                           else f"{retention.get('Years')} years")
@@ -291,13 +436,14 @@ class S3Storage(BackupStorage):
                                'detail': detail})
         except ClientError as e:
             if 'ObjectLockConfigurationNotFound' in e.response.get('Error', {}).get('Code', ''):
-                protection.append({'label': worm, 'status': 'Disabled', 'detail': None})
+                protection.append({'label': worm, 'status': 'Disabled',
+                                   'detail': 'not enabled on this bucket'})
             else:
-                protection.append(self._protection_unknown(worm, e))
+                protection.append(self._protection_unknown(worm, e, capability='readBucketRetentions'))
         if self.lock:
             days = [f"{kind} {self.lock[kind + '_days']} days"
                     for kind in ('db', 'file') if self.lock.get(kind + '_days')]
             protection.append({'label': 'Upload lock (BACKUP_STORAGE)', 'status': 'Enabled',
                                'detail': f"{self.lock_mode.lower()} retention: {', '.join(days)}"
                                          if days else f'{self.lock_mode.lower()} retention'})
-        return protection
+        return protection + self.lifecycle_info(tier_prefixes, versioned=versioned, expire_days=expire_days)

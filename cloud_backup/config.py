@@ -95,6 +95,12 @@ class BackupConfig:
                                        f'{CHANGED_OVERWRITE!r}, {CHANGED_PROTECT!r}, {CHANGED_HISTORY!r}')
 
 
+def config_names():
+    """Every configured destination, which is just the implicit default when
+    BACKUP_CONFIGS is not used."""
+    return list(getattr(settings, 'BACKUP_CONFIGS', None) or [DEFAULT_CONFIG])
+
+
 def get_config(name=None):
     configs = getattr(settings, 'BACKUP_CONFIGS', None)
     if not configs:

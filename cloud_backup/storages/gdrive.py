@@ -135,6 +135,19 @@ class GDriveStorage(BackupStorage):
                 'used': int(quota['usage']) if quota.get('usage') else None,
                 'limit': int(quota['limit']) if quota.get('limit') else None}
 
-    def protection_info(self):
+    def destination_status(self, root=None):
+        if not root:
+            return super().destination_status(root)
+        try:
+            folder = self.get_folder(root)
+        except Exception as e:  # noqa: BLE001 - the panel must always render
+            return {'state': 'unknown', 'label': 'Drive folder', 'status': 'Unknown',
+                    'detail': f'could not check {root} ({type(e).__name__})'}
+        if folder is None:
+            return {'state': 'missing', 'label': 'Drive folder', 'status': 'Disabled',
+                    'detail': f'{root} is not shared with the service account'}
+        return {'state': 'ok', 'label': 'Drive folder', 'status': 'Enabled', 'detail': f'{root} is accessible'}
+
+    def protection_info(self, tier_prefixes=None, expire_days=None):
         return [{'label': 'Trash (soft delete)', 'status': 'Enabled',
                  'detail': 'deleted backups stay in trash for 30 days unless the trash is emptied'}]

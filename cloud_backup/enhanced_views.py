@@ -3,10 +3,11 @@ import datetime
 import hashlib
 import json
 import os
-from functools import cached_property
+from functools import cached_property, partial
 from io import BytesIO
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
+from ajax_helpers.templatetags.ajax_helpers import button_javascript, post_json_js
 from ajax_helpers.utils import ajax_command
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.http import Http404
@@ -17,17 +18,31 @@ from django.utils.safestring import mark_safe
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
 from django_datatables.helpers import row_button
-from django_menus.menu import MenuMixin
+from django_menus.menu import AjaxMenuTemplateView, HtmlMenu, MenuItem, MenuItemDisplay, MenuMixin
 from django_modals.datatables import ModalLink
 from django_modals.decorators import ConfirmAjaxMethod
 from django_modals.helper import reverse_modal
 from openpyxl import Workbook
 
 from cloud_backup.backup import Backup
+from . import storage_setup
 from .backup_local_files import BackupLocal, local_backup_path
+from .config import config_names
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
 from .tasks import ajax_backup
 from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
+
+
+BADGE_COLOURS = {'Enabled': 'success', 'Disabled': 'danger', 'Suspended': 'warning'}
+
+
+def status_badge(row):
+    """One protection_info/destination_status row as a labelled badge."""
+    colour = BADGE_COLOURS.get(row['status'], 'secondary')
+    html = f'{escape(row["label"])} <span class="badge badge-{colour}">{row["status"]}</span>'
+    if row.get('detail'):
+        html += f' <small class="text-muted">{escape(row["detail"])}</small>'
+    return html
 
 
 def restore_table_button(text):
@@ -92,8 +107,8 @@ class BackupContentMixin:
     def render_to_response(self, context, **response_kwargs):
         # with a single table (no trash on S3/Azure, one schema) DatatableView only
         # sets the singular 'datatable' key, but the content template always uses
-        # 'datatables'
-        context['datatables'] = self.tables
+        # 'datatables'. getattr, because the storage setup page has no tables at all
+        context['datatables'] = getattr(self, 'tables', {})
         context['backup_content'] = mark_safe(
             render_to_string(self.content_template, context, request=self.request))
         return super().render_to_response(context, **response_kwargs)
@@ -131,6 +146,8 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                  {'url_args': [0], 'visible': len(self.backup.config.dirs) == 1}),
                 ('cloud_backup:backup_files_root', 'Files',
                  {'visible': len(self.backup.config.dirs) > 1}),
+                ('cloud_backup:storage_setup', 'Storage Setup',
+                 {'css_classes': 'btn btn-outline-secondary'}),
             )
 
     # noinspection PyAttributeOutsideInit
@@ -212,12 +229,8 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
         if info['used'] is not None and info['limit'] is not None:
             gb = 1024 * 1024 * 1024
             html += '<br>{:.1f} GB Used of {:.1f} GB'.format(info['used'] / gb, info['limit'] / gb)
-        badge_colours = {'Enabled': 'success', 'Disabled': 'danger', 'Suspended': 'warning'}
-        for p in db.storage.protection_info():
-            colour = badge_colours.get(p['status'], 'secondary')
-            html += f'<br>{p["label"]} <span class="badge badge-{colour}">{p["status"]}</span>'
-            if p.get('detail'):
-                html += f' <small class="text-muted">{p["detail"]}</small>'
+        for p in db.storage.protection_info(**db.tier_policy()):
+            html += '<br>' + status_badge(p)
         return self.command_response('html', selector='#storage_info', html=html)
 
     def get_table_query(self, table, **kwargs):
@@ -439,5 +452,141 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
 
 class BackupFilesView(BackupFilesBaseView):
+
+    template_name = 'cloud_backup/backup.html'
+
+
+# the generated commands, kept per config so a copy button can hand back exactly what is
+# on the screen. A few KB of plain text with no credentials in it
+SETUP_COMMANDS_SESSION_KEY = 'cloud_backup_setup_commands'
+
+
+def setup_panel(check, copy_button=None, shell_buttons=''):
+    """One destination's panel: what it is, what was found, and what to run about it.
+    copy_button(index=None) renders a clipboard button for one command, or for all of
+    them when index is None; shell_buttons re-renders the panel for another shell."""
+    # only rows that flag themselves count: most of protection_info is context, and
+    # Object Lock being off is the normal state for a lifecycle-managed bucket
+    actions = {row.get('action') for row in check['rows']}
+    if check['error']:
+        state = ('danger', 'Configuration error')
+    elif check['storage_error'] or check['state'] in ('missing', 'denied') or 'fix' in actions:
+        state = ('danger', 'Action required')
+    elif check['state'] == 'unknown' or 'warn' in actions:
+        state = ('warning', 'Worth checking')
+    else:
+        state = ('success', 'Ready')
+    html = (f'<div class="card-body"><h5>{escape(check["name"])} '
+            f'<span class="badge badge-{state[0]}">{state[1]}</span></h5>')
+    if check['error']:
+        return html + f'<p class="text-danger">{escape(check["error"])}</p></div>'
+    html += '<table class="table table-sm w-auto"><tbody>'
+    for label, value in check['facts']:
+        html += f'<tr><td class="text-muted">{escape(label)}</td><td>{escape(value)}</td></tr>'
+    html += '</tbody></table>'
+    if check['storage_error']:
+        html += (f'<p class="text-danger">The destination could not be contacted: '
+                 f'{escape(check["storage_error"])}</p>')
+    html += ''.join(f'<div>{status_badge(row)}</div>' for row in check['rows'])
+    if check['guidance']:
+        html += '<ul class="mt-3">' + ''.join(f'<li>{escape(line)}</li>' for line in check['guidance']) + '</ul>'
+    if check['commands']:
+        heading = ('Run these to set the destination up' if state[1] == 'Action required'
+                   else 'Reference only - this destination already matches')
+        html += f'<h6 class="mt-3">{heading} <small class="text-muted">(b2 command-line tool v4)</small></h6>'
+        html += f'<div class="d-flex mb-2">{shell_buttons}<div class="ml-auto">'
+        html += (copy_button() if copy_button else '') + '</div></div>'
+        for index, command in enumerate(check['commands']):
+            button = copy_button(index) if copy_button else ''
+            html += (f'<p class="mb-1 mt-2"><small class="text-muted">{escape(command["note"])}</small></p>'
+                     f'<div class="d-flex align-items-start">'
+                     f'<pre class="bg-light border p-2 mb-0 flex-grow-1 text-wrap">'
+                     f'{escape(command["command"])}</pre>{button}</div>')
+    return html + '</div>'
+
+
+class StorageSetupBaseView(BackupContentMixin, PermissionRequiredMixin, AjaxMenuTemplateView):
+    """Read-only page describing every configured destination and the commands to set one
+    up. Deliberately not a TableBackup: that resolves the default config on first access,
+    which raises when the configs are exactly what needs fixing."""
+
+    permission_required = 'access_admin'
+    content_template = 'cloud_backup/storage_setup_content.html'
+
+    def setup_menu(self):
+        self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(
+            ('cloud_backup:backup_info', 'backup'),
+            ('cloud_backup:storage_setup', 'storage setup'),
+        )
+
+    def get_context_data(self, **kwargs):
+        names = config_names()
+        for name in names:
+            # one request per destination so a slow or unreachable one only holds up
+            # its own panel
+            self.add_page_command('ajax_post', data={'ajax': 'check_config', 'config': name})
+        context = super().get_context_data(**kwargs)
+        context['configs'] = [{'index': index, 'name': name} for index, name in enumerate(names)]
+        return context
+
+    def copy_button(self, config, index=None):
+        """A clipboard button for one command, or for all of them when index is None.
+        The copied text comes back from the server rather than being embedded in the
+        link: a lifecycle rule is quoted JSON, and MenuItem's javascript hrefs swap
+        double quotes for single ones, which would mangle it.
+
+        AJAX_BUTTON cannot carry which command to copy, so the button javascript is
+        built directly - the same thing AjaxButtonMenuItem does, without needing a
+        version of django-tab-menus that has it."""
+        kwargs = {'config': config} if index is None else {'config': config, 'index': index}
+        # the button_group template supplies the btn class itself
+        display = MenuItemDisplay('Copy all' if index is None else '', 'far fa-clipboard',
+                                  'btn-outline-secondary btn-sm' + ('' if index is None else ' ml-2'))
+        return HtmlMenu(self.request, 'button_group').add_items(
+            MenuItem(button_javascript('copy_commands', **kwargs).replace('"', "'"), display,
+                     link_type=MenuItem.JAVASCRIPT,
+                     tooltip='Copy to the clipboard')).render()
+
+    def shell_buttons(self, config, shell):
+        """Switch the quoting the commands are written for - a JSON lifecycle rule
+        survives bash, PowerShell and cmd.exe only if quoted their way."""
+        return HtmlMenu(self.request, 'button_group').add_items(*[
+            MenuItem(post_json_js(ajax='check_config', config=config, shell=key).replace('"', "'"),
+                     MenuItemDisplay(label, css_classes='btn-outline-secondary btn-sm'
+                                                        + (' active' if key == shell else '')),
+                     link_type=MenuItem.JAVASCRIPT)
+            for key, label in storage_setup.SHELL_LABELS.items()]).render()
+
+    def ajax_check_config(self, config, shell=None, **_kwargs):
+        names = config_names()
+        if config not in names:
+            return self.command_response('message', text=f'No backup configuration named {config}')
+        check = storage_setup.check_config(config, shell=shell or storage_setup.shell_for_request(self.request))
+        commands = [command['command'] for command in check['commands']]
+        if commands:
+            # cached rather than regenerated on copy: regenerating re-runs the checks and
+            # could hand over text that differs from what is on the screen
+            cache = self.request.session.get(SETUP_COMMANDS_SESSION_KEY, {})
+            cache[config] = commands
+            self.request.session[SETUP_COMMANDS_SESSION_KEY] = cache
+        return self.command_response(
+            'html', selector=f'#setup_config_{names.index(config)}',
+            html=setup_panel(check, partial(self.copy_button, config) if commands else None,
+                             shell_buttons=self.shell_buttons(config, check['shell']) if commands else ''))
+
+    def button_copy_commands(self, config, index=None, **_kwargs):
+        commands = self.request.session.get(SETUP_COMMANDS_SESSION_KEY, {}).get(config)
+        if not commands:
+            return self.command_response('message', text='Reload the page and try again')
+        if index is None:
+            return self.command_response('clipboard', text='\n'.join(commands))
+        try:
+            command = commands[int(index)]
+        except (TypeError, ValueError, IndexError):
+            return self.command_response('message', text='Reload the page and try again')
+        return self.command_response('clipboard', text=command)
+
+
+class StorageSetupView(StorageSetupBaseView):
 
     template_name = 'cloud_backup/backup.html'

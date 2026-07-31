@@ -127,11 +127,33 @@ class BackupStorage:
         """
         raise NotImplementedError
 
-    def protection_info(self):
+    def destination_status(self, root=None):
+        """
+        Read-only check that the bucket/container/folder this storage points at exists
+        and is visible to these credentials. Creates nothing.
+        :param root: the backup root path, for backends whose destination is a folder
+        :return: {'state': 'ok'|'missing'|'denied'|'unknown', plus the label/status/detail
+                  of a protection_info row so it renders the same way}
+        """
+        return {'state': 'unknown', 'label': 'Destination', 'status': 'Unknown',
+                'detail': 'this backend cannot check whether the destination exists'}
+
+    def lifecycle_rules(self):
+        """Expiry rules the destination applies by itself, as plain dicts
+        {'id', 'prefix', 'days', 'noncurrent_days'}, or None where the backend has no
+        such concept. Raises where they exist but cannot be read."""
+        return None
+
+    def protection_info(self, tier_prefixes=None, expire_days=None):
         """
         Describe the destination's data-protection configuration (soft delete,
         versioning, WORM/immutability) for display. Costs a few extra API requests,
         so only call it for info pages, not during backups.
+        :param tier_prefixes: {tier: key prefix} when the config uses lifecycle-managed db
+                              tiers, so backends that have lifecycle rules can report on
+                              each tier - with expire_days, both from BackupDb.tier_policy()
+        :param expire_days: {tier: days it should be kept, None for indefinitely} to
+                            report each tier's real rule against what was asked for
         :return: list of {'label': str,
                           'status': 'Enabled'|'Disabled'|'Suspended'|'Unknown',
                           'detail': str or None}

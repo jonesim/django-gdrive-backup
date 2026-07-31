@@ -137,7 +137,24 @@ class AzureStorage(BackupStorage):
         code = getattr(error, 'error_code', None) or type(error).__name__
         return {'label': label, 'status': 'Unknown', 'detail': f'could not query ({code})'}
 
-    def protection_info(self):
+    def destination_status(self, root=None):
+        name = self.container.container_name
+        try:
+            self.container.get_container_properties()
+        except Exception as e:  # noqa: BLE001 - the panel must always render
+            code = getattr(e, 'error_code', None) or type(e).__name__
+            if code in ('ContainerNotFound', 'ResourceNotFoundError'):
+                return {'state': 'missing', 'label': 'Container', 'status': 'Disabled',
+                        'detail': f'{name} does not exist'}
+            if getattr(e, 'status_code', None) == 403 or code in ('AuthorizationFailure',
+                                                                  'ClientAuthenticationError'):
+                return {'state': 'denied', 'label': 'Container', 'status': 'Unknown',
+                        'detail': f'these credentials cannot see {name}'}
+            return {'state': 'unknown', 'label': 'Container', 'status': 'Unknown',
+                    'detail': f'could not check {name} ({code})'}
+        return {'state': 'ok', 'label': 'Container', 'status': 'Enabled', 'detail': f'{name} is accessible'}
+
+    def protection_info(self, tier_prefixes=None, expire_days=None):
         protection = []
         try:
             # account-level query - fails with a container-scoped SAS
