@@ -205,7 +205,177 @@ locked bucket - the prior locked version survives underneath.
   can empty the trash - treat the credential file accordingly
 
 With delete-less credentials, pruning logs a warning instead of failing the backup;
-leave `BACKUP_DB_RETENTION` unset and let bucket lifecycle rules do the pruning.
+leave `BACKUP_DB_RETENTION` unset and let bucket lifecycle rules do the pruning - the
+tiered layout below is the supported way to do that.
+
+**Lifecycle-managed database backups (S3/B2/R2)**
+
+`BACKUP_DB_RETENTION` prunes from the application: it lists the dumps and deletes the
+ones it does not want to keep. `BACKUP_DB_TIERS` is the alternative - the application
+only ever writes, and the bucket's own lifecycle rules do all the deleting:
+
+    BACKUP_DB_TIERS = True          # requires the 's3' backend
+    BACKUP_DB_RETENTION = []        # tiering replaces client-side pruning
+
+Every dump then goes to a unique, date-partitioned key under `hourly/`, and a
+scheduled job promotes one dump per day into `daily/` and one per month into
+`monthly/` using server-side copies (no download, no re-upload, no egress):
+
+    <root>/db/hourly/2026/07/30/db_2026_07_30_14_05_37.dump    expire after ~15 days
+    <root>/db/daily/db_2026-07-30.dump                         expire after ~91 days
+    <root>/db/monthly/db_2026-07.dump                          no rule - kept forever
+
+The retention you get is the lifecycle rules you create; this package never writes
+them, so the backup credential needs neither `DeleteObject` nor
+`PutBucketLifecycleConfiguration`. On AWS, two rules with `Expiration.Days` of 15 and
+91 filtered on the `hourly/` and `daily/` prefixes. On B2, rules are
+`fileNamePrefix` + `daysFromUploadingToHiding` + `daysFromHidingToDeleting`, and B2
+buckets always keep versions, so **both** numbers are needed or "expired" files are
+merely hidden and go on being billed:
+
+    {"fileNamePrefix": "django_backup/db/hourly/", "daysFromUploadingToHiding": 15,
+     "daysFromHidingToDeleting": 1}
+    {"fileNamePrefix": "django_backup/db/daily/",  "daysFromUploadingToHiding": 91,
+     "daysFromHidingToDeleting": 1}
+
+B2 rejects overlapping rules, so an existing bucket-wide rule (empty prefix) has to go
+before these can be added. The backup page reads the bucket's lifecycle configuration
+and shows a row per tier, in red when `hourly/` has no rule (dumps accumulate forever)
+or when a catch-all rule would expire the `monthly/` archive.
+
+**Promotion runs at the end of every database backup**, so there is no second job that
+has to be working for the backups to survive - the hourly tier expires by itself, and a
+promotion step that quietly stopped would lose everything while the backups carried on
+looking healthy. In that in-backup pass it only looks at days after the newest one
+already promoted, which is normally two listings and no copies at all; after an outage it
+catches every missed day up on the next backup.
+
+It is still worth scheduling as well, so promotion happens on a day when no backup runs:
+
+    CELERY_BEAT_SCHEDULE = {
+        'promote_db_tiers': {
+            'task': 'cloud_backup.tasks.promote_db_tiers',
+            'schedule': crontab(hour=1, minute=30),
+        },
+    }
+
+or `python manage.py backup_website --promote_tiers`. That form does a full 14-day scan,
+warns about days that had no dumps at all, and takes `--as_of YYYY-MM-DD` and `--days N`
+to backfill further. It needs no database connection and re-running it is a no-op.
+
+The setup page shows a **Tier promotion** row with the newest daily dump, red when
+nothing has reached the daily tier for more than two days - the one failure that would
+otherwise be invisible until the hourly rule caught up with it.
+
+Notes:
+
+- Tiers are created inside each database folder, so a schema backed up separately gets
+  `<root>/db/<schema>/hourly/...` and needs its own pair of lifecycle rules.
+- One server per prefix: nothing in the key identifies the server, so a second server
+  backing up to the same place needs its own config or `db_dir`.
+- Not compatible with Object Lock (`lock` in `BACKUP_STORAGE`): a retention lock stops
+  lifecycle expiry, so locked hourly dumps would accumulate forever. Pick one.
+- Dumps written before tiering was turned on stay listed and restorable where they
+  are; nothing is migrated or deleted.
+- The web UI lists every tier, which means a metadata request per dump. Set
+  `BACKUP_DB_TIERS = {'hourly_days': 3}` to list only the last few days of the hourly
+  tier - it is a display window, not a retention setting.
+
+**How long each tier is kept** defaults to 15 days hourly, 91 days daily and the monthly
+archive indefinitely. Change it per config, and the setup page generates the matching
+rules and checks the real ones against them:
+
+    BACKUP_DB_TIERS = {'expire_days': {'monthly': 2557}}     # end of month for 7 years
+    BACKUP_DB_TIERS = {'expire_days': {'hourly': 30, 'daily': 180, 'monthly': None}}
+
+`None` means no rule at all, so that tier is kept until someone deletes it. The
+application never applies these numbers - the destination's own rules are what actually
+delete, and the page reads them back: a rule that expires a tier *sooner* than the config
+asks for is a red row, and one that keeps it *longer* an amber one.
+
+Note that lifecycle rules are only as durable as the bucket configuration - anyone with
+`writeBuckets` can shorten them. A 7-year retention that has to survive a hostile admin
+needs Object Lock instead, which means a separate bucket, since object lock and lifecycle
+tiers are mutually exclusive.
+
+**Setting up the bucket**
+
+Since the package never creates a bucket or writes a lifecycle rule, the *Storage Setup*
+button on the backup page (`/backup/setup/`) works out what is missing and shows the
+commands to fix it. It has one panel per `BACKUP_CONFIGS` entry - the only page that
+looks beyond the default config - and is strictly read-only: it checks whether the
+bucket exists and reads the rules already on it, and changes nothing.
+
+For a Backblaze destination it generates commands for the
+[b2 command-line tool v4](https://b2-command-line-tool.readthedocs.io/):
+
+    b2 account authorize <accountKeyID> <applicationKey>
+    b2 bucket create --lifecycle-rule '{"fileNamePrefix": "django_backup/db/hourly/", "daysFromUploadingToHiding": 15, "daysFromHidingToDeleting": 1}' \
+                     --lifecycle-rule '{"fileNamePrefix": "django_backup/db/daily/", "daysFromUploadingToHiding": 91, "daysFromHidingToDeleting": 1}' \
+                     my-backups allPrivate
+    b2 key create --bucket my-backups --name-prefix django_backup/ django-cloud-backup-default-my-backups listBuckets,listFiles,readFiles,writeFiles
+    b2 bucket list
+
+Points the page makes, and the reasons behind them:
+
+- The first command needs an **account-level key** with `writeBuckets`,
+  `readBucketEncryption`, `writeBucketEncryption` and `writeBucketRetentions`. That is not
+  the key the application should use - the restricted key from `b2 key create` is, and the
+  page works its capabilities out from what the config actually does:
+
+  | capability | why | when |
+  |---|---|---|
+  | `listBuckets` | find the bucket; read its versioning, object-lock and lifecycle configuration (the checks on this page) | always |
+  | `listFiles` | list backups for the UI, dedup and pruning | always |
+  | `readFiles` | download for restore, and read metadata (md5, schema, ip) | always |
+  | `writeFiles` | upload backups, and server-side copies (tier promotion, `changed_files='history'`) | always |
+  | `readBuckets` | `Get Bucket Versioning` | always - read-only, for this page |
+  | `readBucketRetentions` | `Get Object Lock Configuration` | always - read-only, for this page |
+  | `readBucketLifecycleRules` | `Get Lifecycle Configuration` | always - read-only, for this page |
+  | `deleteFiles` | `BACKUP_DB_RETENTION` pruning deletes from the application | only when the config prunes; **never** with `db_tiers`, where the bucket does the deleting |
+  | `readFileRetentions`, `writeFileRetentions` | stamp Object Lock retention at upload and top it up with `extend_retention` | only when `lock` is set in `BACKUP_STORAGE` |
+
+  Everything else - `writeBuckets`, `deleteBuckets`, `writeKeys`, `bypassGovernance` - is
+  deliberately absent: a key that can undo the protection is not protection.
+  `--name-prefix` scopes the key to the backup root so it cannot touch anything else in
+  the bucket.
+
+  B2 gates each bucket read behind its own capability, and the three `readBucket*` ones
+  above exist only in the S3-compatible API - there is no B2 native equivalent, so they
+  are easy to miss. Without them the queries fail with `AccessDenied` and the page shows
+  `Unknown` rather than "not configured", which is why it names the missing capability in
+  the row. **A B2 key cannot be edited after creation** - to add a capability, create a
+  new key and update `BACKUP_STORAGE`.
+- `b2 bucket update` **replaces the whole rule set**, so when the bucket already exists
+  the generated command carries the rules already on it as well. Rules that overlap a
+  tier prefix cannot be kept (B2 rejects overlapping rules) and are listed as removed.
+  If the existing rules could not be read, the page says so rather than handing over a
+  command that would quietly wipe them.
+- `--file-lock-enabled` is never generated: a retention lock stops lifecycle expiry.
+- `daysFromHidingToDeleting` is always set. B2 buckets keep versions, so expiry only
+  *hides* a file - without it the hidden version is kept and charged for forever. The
+  per-tier status row flags an existing rule that gets this wrong.
+- A schema backed up separately needs its own pair of rules; the page adds them for the
+  schema folders it finds.
+- Only b2 CLI v4 is supported. v3 (`create-bucket`, `--lifecycleRules`) is deliberately
+  not generated. AWS, R2, Azure and Drive destinations get a panel describing what to
+  create rather than commands.
+
+A lifecycle rule is JSON, and every shell mangles it differently, so the panel has
+**bash / PowerShell / cmd.exe** buttons that re-quote the commands - bash gets
+`'{"fileNamePrefix": ...}'`, the Windows shells get `"{\"fileNamePrefix\": ...}"`, and
+the PowerShell form carries the `--%` stop-parsing token because neither PowerShell 5.1
+nor 7 passes a JSON argument to a native command unaltered. Copy the wrong one and b2
+rejects the argument. The page starts on the shell your **browser's** platform suggests -
+not the server's, since the page is usually served from a Linux container to a Windows
+workstation and it is the workstation that runs b2. The management command takes
+`--shell bash|powershell|cmd`, defaulting to the platform it runs on.
+
+Each command has a clipboard button, plus a *Copy all* for the whole block. Copying uses
+the browser's clipboard API, which only works over https or on localhost.
+
+`python manage.py storage_setup [--config <name>]` prints the same thing on a server
+with no web UI.
 
 **Client-side encryption**
 
@@ -270,7 +440,7 @@ unencrypted database copy that a staging server restores from:
 
 Config keys: `storage` (a `BACKUP_STORAGE`-style dict), `encryption`, `db` (include
 the database, default True), `db_dir`, `dirs` (as `BACKUP_DIRS`), `s3_dirs` (as
-`S3_BACKUP_DIRS`), `retention`, `changed_files`. **A key absent from a config
+`S3_BACKUP_DIRS`), `retention`, `changed_files`, `db_tiers`. **A key absent from a config
 inherits the corresponding legacy global setting** (`BACKUP_STORAGE`,
 `BACKUP_ENCRYPTION`, `BACKUP_DIRS`, ...), so shared values can stay in the globals -
 but note that means a config without `'dirs': []` backs up the global `BACKUP_DIRS`.
@@ -306,6 +476,7 @@ backup through a config with a different key (or none) fails cleanly.
 
     python manage.py backup_website
     python manage.py restore_db
+    python manage.py storage_setup
 
 **Management page**
 
@@ -335,7 +506,8 @@ The enhanced page views build the whole UI (menus, storage info and tables) into
 single HTML string, `{{ backup_content }}`, so it can be dropped into your own
 template. Subclass the base views and set `template_name`:
 
-    from cloud_backup.enhanced_views import BackupBaseView, BackupFilesBaseView, SchemaTableBaseView
+    from cloud_backup.enhanced_views import (BackupBaseView, BackupFilesBaseView,
+                                             SchemaTableBaseView, StorageSetupBaseView)
 
     class MyBackupView(BackupBaseView):
         template_name = 'myapp/backup.html'
@@ -344,6 +516,9 @@ template. Subclass the base views and set `template_name`:
         template_name = 'myapp/backup.html'
 
     class MyBackupFilesView(BackupFilesBaseView):
+        template_name = 'myapp/backup.html'
+
+    class MyStorageSetupView(StorageSetupBaseView):
         template_name = 'myapp/backup.html'
 
 The template must include the ajax_helpers/datatables/modals libraries and the
@@ -365,7 +540,7 @@ Register the subclasses with `backup_urlpatterns` so the menu links and modals
     urlpatterns = [
         path('backup/', include((backup_urlpatterns(
             backup_view=MyBackupView, schema_table_view=MySchemaTableView,
-            files_view=MyBackupFilesView), 'cloud_backup'))),
+            files_view=MyBackupFilesView, setup_view=MyStorageSetupView), 'cloud_backup'))),
     ]
 
 The unbranded standard page remains the default when using
@@ -435,6 +610,11 @@ settings.py
                            {'days': 1, 'number': 10},
                            {'months': 1, 'number': 36},
                            ]
+
+Each entry keeps the newest dump in each period for that many periods, and everything
+not kept by some entry is deleted after each backup. On an S3-compatible destination
+`BACKUP_DB_TIERS` (above) is the alternative: the bucket's lifecycle rules do the
+deleting instead, and the application never needs delete permission.
 
              
 **Schedule backup with celery beat**
