@@ -10,3 +10,4 @@
 /django_examples/staticfiles/
 __pycache__/
 /django_examples/django_examples/credentials/
+/media/

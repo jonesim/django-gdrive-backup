@@ -180,6 +180,9 @@ from encrypted_credentials.django_credentials import add_encrypted_settings
 add_encrypted_settings(globals())
 BACKUP_ROOT = 'test_backup'
 BACKUP_ALLOW_RESTORE = True
+# media/ at the repo root is mounted at /media by docker-compose; its test/
+# sub-folder exercises the file browser's folder navigation
+BACKUP_DIRS = [(MEDIA_ROOT, 'media')]
 BACKUP_DB_RETENTION = [{'hours': 1, 'number': 4},
                        {'hours': 2, 'number': 10},
                        {'days': 1, 'number': 10},
@@ -195,3 +198,40 @@ BACKUP_STORAGE = {
     'secret_key': secret_key,          # B2 applicationKey
     'root': 'test-backup'
 }
+
+# 'default' is everything above, unchanged - the web UI and un-parameterised tasks use it.
+# 'database' sends the database dumps to a second bucket as well, with the lifecycle tiers
+# (hourly/daily/monthly) so the bucket's own rules do the deleting instead of the
+# application. The bucket has to exist first: open /backup/setup/ (or run
+# manage.py storage_setup) for the b2 commands that create it with the right rules and an
+# application key that cannot delete. B2 bucket names are globally unique, so change the
+# name below if it is taken.
+BACKUP_CONFIGS = {
+    'default': {'storage' : BACKUP_STORAGE, 'db': False},
+    'database': {
+        'storage': dict(BACKUP_STORAGE, bucket='bucket-db', access_key_id=db_key_id, secret_key=db_key),
+        'dirs': [],          # database only - the folder backups stay in the default bucket
+        's3_dirs': [],
+        # expire_days is what the lifecycle rules should say - the setup page generates
+        # them and checks the bucket against them. monthly None keeps the end-of-month
+        # dumps indefinitely; set 2557 for exactly 7 years.
+        # To delete from the application instead of by bucket rules, and make the archive
+        # immutable rather than merely un-ruled:
+        #   'delete': 'app', 'lock_days': {'monthly': 2557}, 'lock_mode': 'COMPLIANCE'
+        # (needs 'b2 bucket update --file-lock-enabled' once, and a key with deleteFiles)
+        'db_tiers': {'expire_days': {'hourly': 15, 'daily': 91, 'monthly': None}},
+        'retention': [],     # required with db_tiers: the lifecycle rules do the pruning
+    },
+}
+
+# Run it with: manage.py backup_website --db_only --config database
+# Tier promotion happens at the end of every database backup, so the schedule below is a
+# belt-and-braces second pass (it also covers days when no backup runs at all):
+# CELERY_BEAT_SCHEDULE = {
+#     'backup_database': {'task': 'cloud_backup.tasks.backup',
+#                         'schedule': crontab(minute=10),
+#                         'kwargs': {'config': 'database'}},
+#     'promote_db_tiers': {'task': 'cloud_backup.tasks.promote_db_tiers',
+#                          'schedule': crontab(hour=1, minute=30),
+#                          'kwargs': {'config': 'database'}},
+# }
