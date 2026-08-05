@@ -5,6 +5,7 @@
 /django_cloud_backup.egg-info/
 /django_examples/django_examples/PRIVATE_KEY.env
 /django_examples/django_examples/PRIVATE_settings.py
+/django_examples/django_examples/PRIVATE_settings.enc
 /django_examples/.credentials/cred.json
 /CLAUDE.md
 /django_examples/staticfiles/
