@@ -33,7 +33,7 @@ scheduling the tasks with kwargs={'config': 'staging'}.
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-from .db_tiers import DEFAULT_EXPIRE_DAYS
+from .db_tiers import DEFAULT_EXPIRE_DAYS, DELETE_APP, DELETE_LIFECYCLE, DELETE_MODES, LOCK_MODES
 from .encryption import resolve_key
 from .storages import check_storage_settings
 
@@ -71,15 +71,36 @@ class BackupConfig:
         # how long each tier should be kept, for the setup page to build lifecycle rules
         # from and check the real ones against - None keeps a tier indefinitely
         self.db_tier_expire_days = dict(DEFAULT_EXPIRE_DAYS, **(tier_options.get('expire_days') or {}))
+        # who deletes the aged-out dumps, and which tiers get an object-lock retention
+        # that nothing holding the backup credential can shorten
+        self.db_tier_delete = tier_options.get('delete', DELETE_LIFECYCLE)
+        self.db_tier_lock_days = tier_options.get('lock_days') or {}
+        self.db_tier_lock_mode = tier_options.get('lock_mode', 'COMPLIANCE')
         if self.db_tiers:
-            unknown = set(self.db_tier_expire_days) - set(DEFAULT_EXPIRE_DAYS)
-            if unknown:
-                raise ImproperlyConfigured(f"db_tiers expire_days for backup config '{name}' has unknown "
-                                           f'tier(s) {", ".join(sorted(unknown))} - expected '
-                                           f'{", ".join(DEFAULT_EXPIRE_DAYS)}')
+            for option, values in (('expire_days', self.db_tier_expire_days),
+                                   ('lock_days', self.db_tier_lock_days)):
+                unknown = set(values) - set(DEFAULT_EXPIRE_DAYS)
+                if unknown:
+                    raise ImproperlyConfigured(f"db_tiers {option} for backup config '{name}' has unknown "
+                                               f'tier(s) {", ".join(sorted(unknown))} - expected '
+                                               f'{", ".join(DEFAULT_EXPIRE_DAYS)}')
+            if self.db_tier_delete not in DELETE_MODES:
+                raise ImproperlyConfigured(f"db_tiers delete for backup config '{name}' must be one of "
+                                           f'{", ".join(repr(mode) for mode in DELETE_MODES)}')
+            if self.db_tier_lock_mode not in LOCK_MODES:
+                raise ImproperlyConfigured(f"db_tiers lock_mode for backup config '{name}' must be one of "
+                                           f'{", ".join(repr(mode) for mode in LOCK_MODES)}')
+            for tier, lock_days in self.db_tier_lock_days.items():
+                expire_days = self.db_tier_expire_days.get(tier)
+                if lock_days and expire_days and expire_days < lock_days:
+                    # nothing could carry out that deletion: an object-lock retention
+                    # cannot be shortened, and a lifecycle rule cannot delete through it
+                    raise ImproperlyConfigured(
+                        f"db_tiers for backup config '{name}' locks {tier} dumps for {lock_days} days but "
+                        f'expires them after {expire_days} - they cannot be deleted before the lock ends')
             if self.storage_settings.get('backend', 'gdrive') != 's3':
-                raise ImproperlyConfigured(f"db_tiers for backup config '{name}' needs the 's3' storage backend - "
-                                           f'the tiers are managed by bucket lifecycle rules')
+                raise ImproperlyConfigured(f"db_tiers for backup config '{name}' needs the 's3' storage "
+                                           f'backend')
             if self.retention:
                 raise ImproperlyConfigured(
                     f"db_tiers for backup config '{name}' replaces client-side pruning, but retention is set"

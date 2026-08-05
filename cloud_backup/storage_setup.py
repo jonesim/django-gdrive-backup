@@ -25,7 +25,8 @@ import sys
 from django.conf import settings
 
 from .config import get_config
-from .db_tiers import DAILY, DEFAULT_EXPIRE_DAYS, MONTHLY, TIER_DIRS, parse_daily, tier_prefixes
+from .db_tiers import (DAILY, DEFAULT_EXPIRE_DAYS, DELETE_APP, DELETE_LIFECYCLE, MONTHLY, TIER_DIRS,
+                       parse_daily, tier_prefixes)
 from .storages import get_storage
 
 # a daily dump appears the day after the hourly ones it comes from, so one day behind is
@@ -186,10 +187,23 @@ def b2_setup_commands(check, shell=None):
     # without --% PowerShell rewrites the quoting of a JSON argument on its way to a
     # native command, and 5.1 and 7 do it differently
     stop = '--% ' if shell == POWERSHELL and rules else ''
+    locked_tiers = [tier for tier, days in (check.get('lock_days') or {}).items() if days]
+    lock_flag = '--file-lock-enabled ' if locked_tiers else ''
+    if locked_tiers:
+        lock_note = (f"--file-lock-enabled lets objects carry a retention date; only the "
+                     f"{', '.join(locked_tiers)} tier gets one, so the rest stays deletable. Enabling it "
+                     f"cannot be undone. On a bucket that already exists run "
+                     f"'b2 bucket update --file-lock-enabled {bucket}' instead.")
+    else:
+        lock_note = ('Object Lock (--file-lock-enabled) is deliberately not set: a retention lock stops '
+                     'lifecycle expiry, so the tiers would never be cleaned up.')
     if check['state'] in ('missing', 'denied', 'unknown'):
-        commands.append({'command': f'b2 {stop}bucket create {options}{quote_arg(bucket, shell)} allPrivate',
-                         'note': 'Object Lock (--file-lock-enabled) is deliberately not set: a retention '
-                                 'lock stops lifecycle expiry, so the tiers would never be cleaned up.'})
+        commands.append({'command': f'b2 {stop}bucket create {lock_flag}{options}'
+                                    f'{quote_arg(bucket, shell)} allPrivate',
+                         'note': lock_note})
+    elif locked_tiers:
+        commands.append({'command': f'b2 bucket update --file-lock-enabled {quote_arg(bucket, shell)}',
+                         'note': lock_note})
     if check['state'] != 'missing' and rules:
         note = ('b2 bucket update REPLACES the whole rule set - every rule the bucket should end up with '
                 'has to be on this one command line.')
@@ -210,15 +224,24 @@ def b2_setup_commands(check, shell=None):
                 'object-lock and lifecycle configuration rather than showing Unknown. A key cannot be '
                 'changed after it is created - to add capabilities, make a new one and update '
                 'BACKUP_STORAGE.')
-    if check['prunes']:
+    if check.get('app_deletes'):
+        deletable = ', '.join(tier for tier in TIER_DIRS if tier not in locked_tiers)
+        key_note += f' {B2_DELETE_CAPABILITY} is included because this config deletes aged-out dumps itself.'
+        if locked_tiers:
+            key_note += (f" Anything holding this key can therefore delete the {deletable} tier(s) - the "
+                         f"{', '.join(locked_tiers)} tier is what the object-lock retention protects.")
+        else:
+            key_note += (' Nothing then protects the backups from anything holding this key - consider '
+                         'lock_days on the monthly tier.')
+    elif check['prunes']:
         key_note += (f' {B2_DELETE_CAPABILITY} is included because this config prunes old backups itself '
                      f'(retention); with db_tiers the bucket does the deleting and the key does not need it.')
     else:
         key_note += (f' No {B2_DELETE_CAPABILITY}: nothing in this config deletes, which is what makes the '
                      f'backups safe from the application.')
     if check['object_lock']:
-        key_note += (f' {", ".join(B2_LOCK_CAPABILITIES)} are needed because the lock setting stamps Object '
-                     f'Lock retention on uploads and extend_retention tops it up.')
+        key_note += (f' {", ".join(B2_LOCK_CAPABILITIES)} are needed to stamp and read the Object Lock '
+                     f'retention.')
     if prefix:
         key_options += f'--name-prefix {quote_arg(prefix + "/", shell)} '
     else:
@@ -256,32 +279,79 @@ def guidance(check):
     return lines
 
 
+def deletion_row(config):
+    """In app-delete mode the tiers have no lifecycle rules by design, so say what does
+    the deleting instead of reporting every tier as unprotected."""
+    if not config.db_tiers or config.db_tier_delete != DELETE_APP:
+        return None
+    expires = [f'{tier} after {days} days' for tier, days in config.db_tier_expire_days.items() if days]
+    kept = [tier for tier, days in config.db_tier_expire_days.items() if not days]
+    detail = 'the application deletes ' + (', '.join(expires) or 'nothing')
+    if kept:
+        detail += f", and keeps {', '.join(kept)}"
+    return {'label': 'Deletion', 'status': 'Enabled', 'detail': detail}
+
+
+def lock_row(storage, config):
+    """Object Lock is per object, so the only proof the archive is protected is a stored
+    object carrying a retention date. Checks the newest monthly dump, which is one HEAD."""
+    locked = [tier for tier, days in config.db_tier_lock_days.items() if days]
+    if not locked:
+        return None
+    tier = locked[0]
+    wanted = config.db_tier_lock_days[tier]
+    label, folder = 'Archive lock', f"{config.db_dir.strip('/')}/{tier}/"
+    detail = f'{tier} dumps locked for {wanted} days ({config.db_tier_lock_mode.lower()})'
+    row = {'label': label, 'folder': folder}
+    try:
+        files = storage.list_files(storage.ensure_folder(f"{config.db_dir.strip('/')}/{tier}"))
+        newest = max(files, key=lambda f: f['name']) if files else None
+        retention = storage.object_retention(newest['id']) if newest else None
+    except Exception as e:  # noqa: BLE001
+        return dict(row, status='Unknown', action='warn',
+                    detail=f'{detail} - could not check ({type(e).__name__})')
+    if newest is None:
+        return dict(row, status='Unknown', action='warn',
+                    detail=f'{detail} - nothing in the {tier} tier to check yet')
+    if not retention or not retention.get('retain_until'):
+        return dict(row, status='Disabled', action='fix',
+                    detail=f"{detail} - but {newest['name']} carries no retention: enable Object Lock on "
+                           f'the bucket, then re-promote')
+    days_left = (retention['retain_until'].date() - datetime.date.today()).days
+    return dict(row, status='Enabled',
+                detail=f"{detail} - {newest['name']} is locked for another {days_left} days "
+                       f"({(retention.get('mode') or '').lower()})")
+
+
 def promotion_row(storage, config):
     """Is anything actually reaching the longer-lived tiers? The hourly tier expires by
     itself, so promotion having quietly stopped is the one failure that loses every
     backup while everything else still looks healthy."""
     base = config.db_dir.strip('/')
-    label = 'Tier promotion'
+    # the folder is a column of its own where these rows are shown, so it is not repeated
+    # in the detail text
+    row = {'label': 'Tier promotion', 'folder': f'{base}/{DAILY}/'}
     try:
         daily = storage.list_files(storage.ensure_folder(f'{base}/{DAILY}'))
         monthly = storage.list_files(storage.ensure_folder(f'{base}/{MONTHLY}'))
     except Exception as e:  # noqa: BLE001
-        return {'label': label, 'status': 'Unknown', 'action': 'warn',
-                'detail': f'could not list the daily tier ({type(e).__name__})'}
+        return dict(row, status='Unknown', action='warn',
+                    detail=f'could not list the daily tier ({type(e).__name__})')
     days = sorted(parsed[1] for parsed in map(parse_daily, [f['name'] for f in daily]) if parsed)
     if not days:
         if not monthly:
-            return {'label': label, 'status': 'Unknown', 'action': 'warn',
-                    'detail': f'nothing has been promoted into {base}/{DAILY} yet - expected within a day '
-                              f'of the first backup'}
-        return {'label': label, 'status': 'Disabled', 'action': 'fix',
-                'detail': f'no dumps in {base}/{DAILY} - the hourly tier will expire with nothing behind it'}
+            return dict(row, status='Unknown', action='warn',
+                        detail='nothing has been promoted into the daily tier yet - expected within a '
+                               'day of the first backup')
+        return dict(row, status='Disabled', action='fix',
+                    detail='no dumps in the daily tier - the hourly tier will expire with nothing '
+                           'behind it')
     behind = (datetime.date.today() - days[-1]).days
     detail = f'newest daily dump {days[-1]}, {len(days)} in the daily tier'
     if behind > STALE_PROMOTION_DAYS:
-        return {'label': label, 'status': 'Disabled', 'action': 'fix',
-                'detail': detail + f' - {behind} days behind, so nothing recent has been promoted'}
-    return {'label': label, 'status': 'Enabled', 'detail': detail}
+        return dict(row, status='Disabled', action='fix',
+                    detail=detail + f' - {behind} days behind, so nothing recent has been promoted')
+    return dict(row, status='Enabled', detail=detail)
 
 
 def storage_facts(config, storage_settings):
@@ -312,7 +382,7 @@ def check_config(name, shell=None):
              'root': None, 'db_dir': None, 'facts': [], 'rows': [], 'state': 'unknown',
              'wanted_rules': [], 'keep_rules': [], 'dropped_rules': [], 'rules_unknown': False,
              'commands': [], 'guidance': [], 'backblaze': False, 'prunes': False, 'object_lock': False,
-             'expire_days': None,
+             'expire_days': None, 'lock_days': {}, 'lock_mode': None, 'app_deletes': False,
              'shell': shell if shell in SHELL_LABELS else default_shell()}
     try:
         config = get_config(name)
@@ -327,12 +397,21 @@ def check_config(name, shell=None):
                   'backblaze': is_backblaze(storage_settings),
                   # what the application itself will do to the destination, which is what
                   # the key has to be allowed to do
-                  'prunes': bool(config.retention) and not config.db_tiers,
-                  'object_lock': bool(storage_settings.get('lock')),
+                  'prunes': bool(config.retention) or (config.db_tiers
+                                                       and config.db_tier_delete == DELETE_APP),
+                  'object_lock': bool(storage_settings.get('lock'))
+                                 or bool(config.db_tiers and any(config.db_tier_lock_days.values())),
+                  'lock_days': dict(config.db_tier_lock_days) if config.db_tiers else {},
+                  'lock_mode': config.db_tier_lock_mode if config.db_tiers else None,
+                  'app_deletes': bool(config.db_tiers and config.db_tier_delete == DELETE_APP),
                   'facts': storage_facts(config, storage_settings)})
     if config.db_tiers:
         check['expire_days'] = config.db_tier_expire_days
-        check['wanted_rules'] = b2_tier_rules(tier_prefixes(config.db_dir.strip('/')), check['expire_days'])
+        if config.db_tier_delete == DELETE_LIFECYCLE:
+            # with the application deleting there are no rules to create, and a rule would
+            # be a second thing deleting the same objects to a different schedule
+            check['wanted_rules'] = b2_tier_rules(tier_prefixes(config.db_dir.strip('/')),
+                                                  check['expire_days'])
     try:
         storage = get_storage(storage_settings)
     except Exception as e:  # noqa: BLE001 - bad credentials, missing SDK, unknown backend
@@ -345,17 +424,24 @@ def check_config(name, shell=None):
     check['state'] = status['state']
     check['rows'] = [status]
     try:
+        # no per-tier lifecycle rows when the application does the deleting: there are
+        # meant to be no rules, so measuring the tiers against them says nothing
         check['rows'] += storage.protection_info(
-            tier_prefixes=tier_prefixes(config.db_dir.strip('/')) if config.db_tiers else None,
+            tier_prefixes=(tier_prefixes(config.db_dir.strip('/'))
+                           if config.db_tiers and not check['app_deletes'] else None),
             expire_days=check['expire_days'])
     except Exception as e:  # noqa: BLE001
         check['rows'].append({'label': 'Protection', 'status': 'Unknown',
                               'detail': redact(e, storage_settings)})
+    check['rows'] += [row for row in [deletion_row(config)] if row]
     if config.db_tiers and status['state'] == 'ok':
         check['rows'].append(promotion_row(storage, config))
+        check['rows'] += [row for row in [lock_row(storage, config)] if row]
     if check['wanted_rules'] and status['state'] == 'ok':
-        add_existing_rules(check, storage)
+        # the schema rules first: they add tier prefixes of their own, and an existing rule
+        # that overlaps one of those has to be dropped rather than carried over
         add_schema_rules(check, storage, config)
+        add_existing_rules(check, storage)
     elif check['wanted_rules']:
         check['rules_unknown'] = True
     return finish_check(check)
@@ -375,7 +461,9 @@ def add_existing_rules(check, storage):
     for rule in existing:
         if any(overlaps(prefix, rule['prefix']) for prefix in ours):
             check['dropped_rules'].append(rule)
-        else:
+        # a rule that expires nothing still claims its prefix, and B2 will not take a
+        # second rule on a prefix it already has
+        elif rule['days'] or rule['noncurrent_days']:
             check['keep_rules'].append(b2_lifecycle_rule(rule['prefix'], rule['days'],
                                                          rule['noncurrent_days']))
 

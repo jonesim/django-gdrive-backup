@@ -84,11 +84,13 @@ class BackupStorage:
         the backend has one."""
         raise NotImplementedError('This storage backend cannot keep file versions')
 
-    def copy_stored_file(self, stored_file, folder, name, extra_metadata=None, lock_days=None):
+    def copy_stored_file(self, stored_file, folder, name, extra_metadata=None, lock_days=None,
+                         lock_mode=None):
         """Server-side copy of an already stored file to another name/folder in the same
         destination - no download and no re-upload, so no egress. The file's metadata is
-        preserved with extra_metadata merged over it. Returns the normalised dict of the
-        new file."""
+        preserved with extra_metadata merged over it. lock_days/lock_mode apply object-lock
+        retention to the copy where the backend supports it. Returns the normalised dict of
+        the new file."""
         raise NotImplementedError('This storage backend cannot copy stored files server-side')
 
     @staticmethod
@@ -138,10 +140,17 @@ class BackupStorage:
         return {'state': 'unknown', 'label': 'Destination', 'status': 'Unknown',
                 'detail': 'this backend cannot check whether the destination exists'}
 
+    def object_retention(self, file_id):
+        """The object-lock retention on one stored file as
+        {'mode': str, 'retain_until': datetime}, or None where it has none or the backend
+        has no object lock."""
+        return None
+
     def lifecycle_rules(self):
         """Expiry rules the destination applies by itself, as plain dicts
-        {'id', 'prefix', 'days', 'noncurrent_days'}, or None where the backend has no
-        such concept. Raises where they exist but cannot be read."""
+        {'id', 'prefix', 'days', 'noncurrent_days', 'delete_markers', 'abort_days'}, one
+        per key prefix, or None where the backend has no such concept. Raises where they
+        exist but cannot be read."""
         return None
 
     def protection_info(self, tier_prefixes=None, expire_days=None):
@@ -156,7 +165,12 @@ class BackupStorage:
                             report each tier's real rule against what was asked for
         :return: list of {'label': str,
                           'status': 'Enabled'|'Disabled'|'Suspended'|'Unknown',
-                          'detail': str or None}
+                          'detail': str or None,
+                          'folder': the key prefix the row is about, where it has one -
+                                    rendered as its own column,
+                          'action': 'fix'|'warn' on the rows that mean something has to be
+                                    done, which is what sets the setup page's panel state.
+                                    Absent on rows that are context}
         """
         return []
 

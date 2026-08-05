@@ -288,15 +288,45 @@ rules and checks the real ones against them:
     BACKUP_DB_TIERS = {'expire_days': {'monthly': 2557}}     # end of month for 7 years
     BACKUP_DB_TIERS = {'expire_days': {'hourly': 30, 'daily': 180, 'monthly': None}}
 
-`None` means no rule at all, so that tier is kept until someone deletes it. The
+`None` means no rule at all, so that tier is kept until someone deletes it. By default the
 application never applies these numbers - the destination's own rules are what actually
 delete, and the page reads them back: a rule that expires a tier *sooner* than the config
 asks for is a red row, and one that keeps it *longer* an amber one.
 
-Note that lifecycle rules are only as durable as the bucket configuration - anyone with
-`writeBuckets` can shorten them. A 7-year retention that has to survive a hostile admin
-needs Object Lock instead, which means a separate bucket, since object lock and lifecycle
-tiers are mutually exclusive.
+**Explicit deletes with a locked archive**
+
+Lifecycle rules are only as durable as the bucket configuration - anyone with
+`writeBuckets` can shorten them, and they delete silently. `delete: 'app'` moves the
+deleting into the backup run, where it is logged and testable, and `lock_days` puts an
+Object Lock retention on the tier that then has nothing else protecting it:
+
+    BACKUP_DB_TIERS = {
+        'delete': 'app',                                  # default: 'lifecycle'
+        'expire_days': {'hourly': 15, 'daily': 91, 'monthly': None},
+        'lock_days': {'monthly': 2557},                   # 7 years, per object
+        'lock_mode': 'COMPLIANCE',                        # or 'GOVERNANCE'
+    }
+
+In this mode no lifecycle rules are generated or expected; the backup run deletes hourly
+dumps older than `expire_days['hourly']` and daily ones older than `expire_days['daily']`,
+straight after promoting - so a dump is only ever deleted once its daily copy exists.
+
+Object Lock in B2 is **per object**, not per bucket: enabling it on the bucket only
+permits objects to carry a retention date, and only the tiers in `lock_days` get one. So
+the monthly archive becomes immutable while hourly and daily stay freely deletable in the
+same bucket. `COMPLIANCE` cannot be shortened by anyone, including the account owner -
+which is the point, and also means you are committed to paying for those objects for the
+full period, and cannot delete the bucket while any remain. `GOVERNANCE` allows a key
+with `bypassGovernance` to delete early.
+
+The bucket needs Object Lock enabling, which `b2 bucket update --file-lock-enabled
+<bucket>` does on an existing bucket - it cannot be turned off again. The key needs
+`deleteFiles` and the file-retention capabilities; the setup page generates both, and adds
+an **Archive lock** row that HEADs the newest monthly dump to prove it really carries a
+retention date rather than trusting the settings.
+
+The trade-off is explicit: the backup credential can now delete, which is what an attacker
+would use it for. What survives that is exactly the tiers in `lock_days`.
 
 **Setting up the bucket**
 

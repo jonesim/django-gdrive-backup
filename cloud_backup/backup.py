@@ -5,7 +5,7 @@ from django.conf import settings
 from .backup_db import BackupDb
 from .backup_local_files import BackupLocal
 from .config import BackupConfig, CHANGED_PROTECT, get_config
-from .db_tiers import DEFAULT_CATCHUP_DAYS, DbTierPromoter, TIER_DIRS
+from .db_tiers import DEFAULT_CATCHUP_DAYS, DELETE_APP, DbTierPromoter, TIER_DIRS
 from .sql_functions import get_schemas
 from .storages import get_storage
 
@@ -116,18 +116,24 @@ class Backup:
         except Exception as e:  # noqa: BLE001 - never fail a completed backup over this
             self.logger.warning(f'Could not promote backup tiers: {e}')
             return
-        stats = {'daily': 0, 'monthly': 0, 'skipped': 0, 'empty_days': [], 'errors': []}
+        stats = {'daily': 0, 'monthly': 0, 'skipped': 0, 'deleted': 0, 'empty_days': [], 'errors': []}
         for folder in folders:
             promoter = DbTierPromoter(self.storage, folder, self.logger,
-                                      lock_days=self.storage.lock_days('db'))
-            promoted = promoter.promote(as_of=as_of, days=days or DEFAULT_CATCHUP_DAYS,
-                                        resume=resume, warn_empty=warn_empty)
-            for key, value in promoted.items():
+                                      lock_days=self.config.db_tier_lock_days,
+                                      lock_mode=self.config.db_tier_lock_mode)
+            promoter.promote(as_of=as_of, days=days or DEFAULT_CATCHUP_DAYS,
+                             resume=resume, warn_empty=warn_empty)
+            if self.config.db_tier_delete == DELETE_APP:
+                # only after promotion: an hourly dump that has not been copied into the
+                # daily tier yet must not be deleted for being old
+                promoter.prune(as_of=as_of, expire_days=self.config.db_tier_expire_days)
+            for key, value in promoter.stats.items():
                 stats[key] = stats[key] + value
-        if stats['daily'] or stats['monthly'] or stats['errors'] or not resume:
+        if stats['daily'] or stats['monthly'] or stats['deleted'] or stats['errors'] or not resume:
             # the in-backup call runs every time and usually has nothing to say
             self.logger.info(f"Backup tiers: {stats['daily']} promoted to daily, "
-                             f"{stats['monthly']} to monthly, {stats['skipped']} already promoted")
+                             f"{stats['monthly']} to monthly, {stats['skipped']} already promoted"
+                             + (f", {stats['deleted']} deleted" if stats['deleted'] else ''))
         for error in stats['errors']:
             self.logger.warning(f'Not promoted: {error}')
         return stats

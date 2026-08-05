@@ -82,7 +82,7 @@
         </tr>
         {% for p in protection %}
         <tr>
-            <td><b>{{ p.label }}</b></td>
+            <td><b>{{ p.label }}</b>{% if p.folder %} <small>{{ p.folder }}</small>{% endif %}</td>
             <td>{{ p.status }}{% if p.detail %} &mdash; {{ p.detail }}{% endif %}</td>
         </tr>
         {% endfor %}

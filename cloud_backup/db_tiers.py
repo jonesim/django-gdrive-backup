@@ -34,6 +34,16 @@ TIER_DIRS = (HOURLY, DAILY, MONTHLY)
 # db_tiers = {'expire_days': {'monthly': 2557}}  (7 years)
 DEFAULT_EXPIRE_DAYS = {HOURLY: 15, DAILY: 91, MONTHLY: None}
 
+# Who does the deleting. DELETE_LIFECYCLE (the default) leaves it to the destination's
+# own rules, so the application needs no delete permission at all. DELETE_APP has the
+# application delete aged-out dumps itself - visible and logged, at the price of a
+# credential that can delete, which is why it pairs with lock_days on the tier that
+# matters: an object-lock retention cannot be shortened by anything holding that key.
+DELETE_LIFECYCLE = 'lifecycle'
+DELETE_APP = 'app'
+DELETE_MODES = (DELETE_LIFECYCLE, DELETE_APP)
+LOCK_MODES = ('COMPLIANCE', 'GOVERNANCE')
+
 # seconds, unlike the flat layout's minute precision: with lifecycle-only retention and
 # no versioning, two dumps in the same minute overwriting each other is real data loss.
 # Fixed-width and zero-padded, so lexical order of the names is chronological order.
@@ -134,14 +144,18 @@ class DbTierPromoter:
     Re-running is a no-op: a tier object that already exists is never re-copied, so the
     job can safely run nightly and self-heals after missed runs."""
 
-    def __init__(self, storage, folder, logger, lock_days=None):
+    def __init__(self, storage, folder, logger, lock_days=None, lock_mode=None):
+        """:param lock_days: {tier: object-lock days} stamped on the copy - normally only
+        the monthly archive, so that the tier nothing else protects cannot be deleted by
+        anything holding the backup credential"""
         self.storage = storage
         self.folder = folder
         self.logger = logger
-        self.lock_days = lock_days
+        self.lock_days = lock_days or {}
+        self.lock_mode = lock_mode
         self.daily_folder = storage.ensure_folder(DAILY, parent=folder)
         self.monthly_folder = storage.ensure_folder(MONTHLY, parent=folder)
-        self.stats = {'daily': 0, 'monthly': 0, 'skipped': 0, 'empty_days': [], 'errors': []}
+        self.stats = {'daily': 0, 'monthly': 0, 'skipped': 0, 'deleted': 0, 'empty_days': [], 'errors': []}
 
     def promote(self, as_of=None, days=DEFAULT_CATCHUP_DAYS, resume=False, warn_empty=True):
         """
@@ -217,6 +231,45 @@ class DbTierPromoter:
                 monthly_names.add(name)
                 self.stats['monthly'] += 1
 
+    def prune(self, as_of=None, expire_days=None):
+        """Delete dumps the tier policy says are past their age, when the application
+        rather than the destination's rules is doing the deleting. A tier with no
+        expire_days is never touched, and a locked object refuses the delete - both are
+        the point rather than a failure, so a delete that is refused is a warning."""
+        as_of = as_of or datetime.date.today()
+        expire_days = expire_days or {}
+        deleted = 0
+        for tier in TIER_DIRS:
+            days = expire_days.get(tier)
+            if not days:
+                continue
+            oldest = as_of - datetime.timedelta(days=days)
+            for stored, taken in self.tier_files(tier):
+                if taken and taken.date() < oldest:
+                    try:
+                        self.storage.delete(stored['id'])
+                    except Exception as e:  # noqa: BLE001 - object lock, or a key that
+                        # cannot delete: the backup itself has already succeeded
+                        self.stats['errors'].append(f"{stored['id']}: {e}")
+                        self.logger.warning(f'Could not delete {stored["id"]}: {e}')
+                        continue
+                    deleted += 1
+                    self.logger.info(f'Deleted {stored["id"]} - older than {days} days')
+        self.stats['deleted'] += deleted
+        return deleted
+
+    def tier_files(self, tier):
+        """(file, time it was taken) for everything in one tier. The hourly tier is date
+        partitioned, so its listing is a walk while the others are one listing each."""
+        folder = self.storage.ensure_folder(tier, parent=self.folder)
+        if tier == HOURLY:
+            for _path, stored in self.storage.walk(folder):
+                parsed = parse_dump(stored['name'])
+                yield stored, parsed[1] if parsed else None
+            return
+        for stored in self.storage.list_files(folder):
+            yield stored, backup_time(stored['name'])
+
     def copy(self, source, folder, name, tier, taken=None):
         target = f"{folder['id']}/{name}"
         if not source['size']:
@@ -230,7 +283,8 @@ class DbTierPromoter:
             metadata['backup_time'] = taken.isoformat()
         try:
             copied = self.storage.copy_stored_file(source, folder, name, extra_metadata=metadata,
-                                                   lock_days=self.lock_days)
+                                                   lock_days=self.lock_days.get(tier),
+                                                   lock_mode=self.lock_mode)
         except Exception as e:
             # one unpromotable dump must not stop the rest, as with prune/extend_retention
             self.stats['errors'].append(f'{target}: {e}')

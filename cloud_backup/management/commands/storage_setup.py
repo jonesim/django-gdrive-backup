@@ -26,13 +26,18 @@ class Command(BaseCommand):
             if check['error']:
                 print('Config error: ' + check['error'])
                 continue
-            for label, value in check['facts']:
-                print(f'  {label + ":":22}{value}')
+            lines = [(label, value) for label, value in check['facts']]
             if check['storage_error']:
-                print('  Storage error: ' + check['storage_error'])
+                lines.append(('Storage error', check['storage_error']))
             for row in check['rows']:
                 detail = f" - {row['detail']}" if row.get('detail') else ''
-                print(f"  {row['label'] + ':':22}{row['status']}{detail}")
+                # the folder is a column of its own on the web page; here it goes with the
+                # label, which is why the column is measured rather than fixed
+                label = row['label'] + (f" {row['folder']}" if row.get('folder') else '')
+                lines.append((label, f"{row['status']}{detail}"))
+            width = max((len(label) for label, _ in lines), default=0) + 2
+            for label, value in lines:
+                print(f'  {label + ":":{width}}{value}')
             for line in check['guidance']:
                 print('  ' + line)
             if check['commands']:

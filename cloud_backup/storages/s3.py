@@ -54,12 +54,13 @@ class S3Storage(BackupStorage):
         self.lock_mode = self.lock.get('mode', 'COMPLIANCE')
         self.transfer_config = TransferConfig(multipart_threshold=64 * 1024 * 1024)
 
-    def _lock_args(self, lock_days):
-        """Object-lock parameters for an upload/copy - the bucket must have been
-        created with Object Lock enabled or these requests will be rejected."""
+    def _lock_args(self, lock_days, lock_mode=None):
+        """Object-lock parameters for an upload/copy - the bucket must have Object Lock
+        enabled or these requests are rejected. Retention is per object, so locking one
+        tier does not stop anything else in the bucket being deleted."""
         if not lock_days:
             return {}
-        return {'ObjectLockMode': self.lock_mode,
+        return {'ObjectLockMode': lock_mode or self.lock_mode,
                 'ObjectLockRetainUntilDate': datetime.now(timezone.utc) + timedelta(days=lock_days)}
 
     @staticmethod
@@ -175,13 +176,14 @@ class S3Storage(BackupStorage):
                      ExtraArgs=self._lock_args(lock_days) or None, Config=self.transfer_config)
         return version_key
 
-    def copy_stored_file(self, stored_file, folder, name, extra_metadata=None, lock_days=None):
+    def copy_stored_file(self, stored_file, folder, name, extra_metadata=None, lock_days=None,
+                         lock_mode=None):
         key = f"{folder['id']}/{name}"
         head = self.s3.head_object(Bucket=self.bucket, Key=stored_file['id'])
         metadata = dict(head.get('Metadata') or {},
                         **{k: str(v) for k, v in (extra_metadata or {}).items()})
         source = {'Bucket': self.bucket, 'Key': stored_file['id']}
-        extra_args = {'Metadata': metadata, **self._lock_args(lock_days)}
+        extra_args = {'Metadata': metadata, **self._lock_args(lock_days, lock_mode)}
         if head.get('ContentType'):
             extra_args['ContentType'] = head['ContentType']
         if head['ContentLength'] <= self.copy_object_limit:
@@ -298,34 +300,68 @@ class S3Storage(BackupStorage):
     def days(number):
         return f'{number} day' if number == 1 else f'{number} days'
 
+    def object_retention(self, file_id):
+        head = self.s3.head_object(Bucket=self.bucket, Key=file_id)
+        retain_until = head.get('ObjectLockRetainUntilDate')
+        if not retain_until:
+            return None
+        return {'mode': head.get('ObjectLockMode'), 'retain_until': self.to_local_naive(retain_until)}
+
     def lifecycle_rules(self):
-        """The bucket's enabled lifecycle rules as plain dicts - [] when it has none
-        configured. The caller has to expect a failure: not every S3-compatible service
-        implements the call, and a backup credential may well not be allowed to read the
-        bucket configuration."""
+        """The bucket's enabled lifecycle rules as plain dicts, one per key prefix - []
+        when it has none configured. The caller has to expect a failure: not every
+        S3-compatible service implements the call, and a backup credential may well not be
+        allowed to read the bucket configuration."""
         try:
             rules = self.s3.get_bucket_lifecycle_configuration(Bucket=self.bucket).get('Rules', [])
         except ClientError as e:
             if 'NoSuchLifecycleConfiguration' in e.response.get('Error', {}).get('Code', ''):
                 return []
             raise
-        # a service can express one of its own rules as several S3 rules, so keep every
-        # field that says what a rule does - a rule rendered with no detail at all just
-        # looks like a duplicate of the one above it
-        return [{'id': rule.get('ID') or '', 'prefix': self._rule_prefix(rule),
-                 'days': self._rule_days(rule), 'noncurrent_days': self._rule_noncurrent_days(rule),
-                 'delete_markers': bool((rule.get('Expiration') or {}).get('ExpiredObjectDeleteMarker')),
-                 'abort_days': (rule.get('AbortIncompleteMultipartUpload')
-                                or {}).get('DaysAfterInitiation')}
-                for rule in rules if rule.get('Status') == 'Enabled']
+        return self.merge_rules(
+            {'id': rule.get('ID') or '', 'prefix': self._rule_prefix(rule),
+             'days': self._rule_days(rule), 'noncurrent_days': self._rule_noncurrent_days(rule),
+             'delete_markers': bool((rule.get('Expiration') or {}).get('ExpiredObjectDeleteMarker')),
+             'abort_days': (rule.get('AbortIncompleteMultipartUpload') or {}).get('DaysAfterInitiation')}
+            for rule in rules if rule.get('Status') == 'Enabled')
 
-    def rule_detail(self, rule):
+    @staticmethod
+    def merge_rules(rules):
+        """One entry per key prefix. A service can express one of its own rules as several
+        S3 rules - Backblaze returns the delete-marker clean-up as a second rule on the
+        same prefix - and two entries that each describe half of one rule read as
+        duplicates, and turn into an overlapping pair of B2 rules that b2 bucket update
+        rejects. The shortest wins for every day count: that is what actually happens to
+        the object. Merging is by prefix alone, so rules that differ only by a tag or size
+        filter collapse together - those filters are not represented here either."""
+        merged = {}
+        for rule in rules:
+            target = merged.get(rule['prefix'])
+            if target is None:
+                merged[rule['prefix']] = dict(rule)
+                continue
+            target['id'] = target['id'] or rule['id']
+            for field in ('days', 'noncurrent_days', 'abort_days'):
+                days = [d for d in (target[field], rule[field]) if d]
+                target[field] = min(days) if days else None
+            target['delete_markers'] = target['delete_markers'] or rule['delete_markers']
+        return list(merged.values())
+
+    def rule_detail(self, rule, versioned=False):
+        """What a rule does, in the order it happens. On a versioned bucket expiry only
+        hides the current version, so the noncurrent clause is what actually deletes."""
+        noncurrent = 'hidden versions deleted after' if versioned else 'previous versions after'
         parts = [f"expire after {self.days(rule['days'])}" if rule['days'] else None,
-                 f"previous versions after {self.days(rule['noncurrent_days'])}"
+                 f"{noncurrent} {self.days(rule['noncurrent_days'])}"
                  if rule['noncurrent_days'] else None,
                  'delete markers removed' if rule['delete_markers'] else None,
                  f"abandoned uploads after {self.days(rule['abort_days'])}" if rule['abort_days'] else None]
         return ', '.join(part for part in parts if part) or 'nothing expires'
+
+    @staticmethod
+    def rule_name(rule):
+        """A rule created without an ID still has to be nameable in a message."""
+        return rule['id'] or rule['prefix'] or '(whole bucket)'
 
     @staticmethod
     def tier_expiry(rules, prefix):
@@ -345,49 +381,54 @@ class S3Storage(BackupStorage):
             rules = self.lifecycle_rules()
         except Exception as e:
             return [self._protection_unknown('Lifecycle rules', e, capability='readBucketLifecycleRules')]
-        protection = []
-        for rule in rules:
-            protection.append({'label': f"Lifecycle {rule['prefix'] or '(whole bucket)'}",
-                               'status': 'Enabled', 'detail': self.rule_detail(rule)})
+        tier_rows = []
+        # the folder a tier row has already described needs no second row of its own
+        reported = set()
         for tier, prefix in (tier_prefixes or {}).items():
-            protection.append(self._tier_row(tier, prefix, rules, versioned, expire_days.get(tier)))
-        return protection
+            rule = self.tier_expiry(rules, prefix)
+            if rule is not None and rule['prefix'] == prefix:
+                reported.add(prefix)
+            tier_rows.append(self._tier_row(tier, prefix, rule, versioned, expire_days.get(tier)))
+        # what is left is every rule no tier speaks for: a parent or whole-bucket rule, a
+        # per-schema tier folder, or anything the site set up itself
+        return [{'label': 'Lifecycle', 'folder': rule['prefix'] or '(whole bucket)',
+                 'status': 'Enabled', 'detail': self.rule_detail(rule, versioned)}
+                for rule in rules if rule['prefix'] not in reported] + tier_rows
 
-    def _tier_row(self, tier, prefix, rules, versioned, wanted):
+    def _tier_row(self, tier, prefix, rule, versioned, wanted):
         """One tier's rule measured against what the config asked for. 'action' marks the
         rows that mean something has to be done - the rest of protection_info is context
-        (Object Lock off is the normal state for a lifecycle-managed bucket, not a fault)."""
-        label = f'Lifecycle {tier} dumps'
-        rule = self.tier_expiry(rules, prefix)
+        (Object Lock off is the normal state for a lifecycle-managed bucket, not a fault).
+        The healthy details come from rule_detail, so this row says everything the rule
+        itself would have said and the rule needs no row of its own."""
+        row = {'label': f'Lifecycle {tier}', 'folder': prefix}
         if rule is None:
             if wanted is None:
-                return {'label': label, 'status': 'Enabled', 'detail': 'kept - no expiry rule, as intended'}
-            return {'label': label, 'status': 'Disabled', 'action': 'fix',
-                    'detail': f'no lifecycle rule for {prefix} - {tier} dumps will accumulate forever '
-                              f'instead of expiring after {self.days(wanted)}'}
+                return dict(row, status='Enabled', detail='kept - no expiry rule, as intended')
+            return dict(row, status='Disabled', action='fix',
+                        detail=f'no lifecycle rule - {tier} dumps will accumulate forever instead of '
+                               f'expiring after {self.days(wanted)}')
         if wanted is None:
             # something expires the tier that is meant to be kept - usually a catch-all
             # rule on the whole bucket, which is how an archive quietly disappears
-            return {'label': label, 'status': 'Disabled', 'action': 'fix',
-                    'detail': f"rule '{rule['id']}' expires them after {self.days(rule['days'])} - {tier} "
-                              f'dumps are meant to be kept'}
+            return dict(row, status='Disabled', action='fix',
+                        detail=f"rule '{self.rule_name(rule)}' expires them after {self.days(rule['days'])}"
+                               f' - {tier} dumps are meant to be kept')
         if rule['days'] < wanted:
-            return {'label': label, 'status': 'Disabled', 'action': 'fix',
-                    'detail': f"rule '{rule['id']}' expires them after {self.days(rule['days'])}, sooner "
-                              f'than the {self.days(wanted)} this config asks for'}
+            return dict(row, status='Disabled', action='fix',
+                        detail=f"rule '{self.rule_name(rule)}' expires them after {self.days(rule['days'])}, "
+                               f'sooner than the {self.days(wanted)} this config asks for')
         if versioned and not rule['noncurrent_days']:
             # B2 (and any versioned bucket) only hides the file on expiry - without a
             # noncurrent rule the hidden version stays and goes on being billed
-            return {'label': label, 'status': 'Disabled', 'action': 'fix',
-                    'detail': f"expire after {self.days(rule['days'])}, but the hidden versions are never "
-                              f'deleted - they keep being charged for'}
-        detail = f"expire after {self.days(rule['days'])}"
-        if rule['noncurrent_days']:
-            detail += f", hidden versions deleted after {self.days(rule['noncurrent_days'])}"
+            return dict(row, status='Disabled', action='fix',
+                        detail=f"expire after {self.days(rule['days'])}, but the hidden versions are never "
+                               f'deleted - they keep being charged for')
+        detail = self.rule_detail(rule, versioned)
         if rule['days'] > wanted:
-            return {'label': label, 'status': 'Suspended', 'action': 'warn',
-                    'detail': detail + f' - longer than the {self.days(wanted)} this config asks for'}
-        return {'label': label, 'status': 'Enabled', 'detail': detail}
+            return dict(row, status='Suspended', action='warn',
+                        detail=detail + f' - longer than the {self.days(wanted)} this config asks for')
+        return dict(row, status='Enabled', detail=detail)
 
     def destination_status(self, root=None):
         try:
@@ -427,7 +468,8 @@ class S3Storage(BackupStorage):
             config = config.get('ObjectLockConfiguration', {})
             enabled = config.get('ObjectLockEnabled') == 'Enabled'
             retention = config.get('Rule', {}).get('DefaultRetention', {})
-            detail = None if enabled else 'not enabled on this bucket'
+            detail = ('objects may carry a retention date' if enabled
+                      else 'not enabled on this bucket')
             if retention:
                 period = (f"{retention['Days']} days" if retention.get('Days')
                           else f"{retention.get('Years')} years")
