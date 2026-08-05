@@ -26,9 +26,15 @@ global setting (BACKUP_STORAGE, BACKUP_ENCRYPTION, BACKUP_DIRS, ...), which is a
 how installations without BACKUP_CONFIGS keep working unchanged - their globals
 simply become the 'default' config.
 
-The web UI and un-parameterised Celery tasks always use the default config; other
-configs are reached with backup_website --config / restore_db --config or by
-scheduling the tasks with kwargs={'config': 'staging'}.
+The enhanced web UI shows a tab per config and every action works on the selected one -
+it opens on the first config that includes the database, since a files-only destination
+has no database page. The basic UI and un-parameterised Celery tasks still use the
+default config; a named config is also reached with backup_website --config /
+restore_db --config or by scheduling the tasks with kwargs={'config': 'staging'}.
+
+The UI helpers at the end of this module never raise (a broken config has to be
+describable, not fatal). Where the selection cannot travel as a name - modal slugs, which
+django-modals splits on '-' - it travels as the config's index in config_names().
 """
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -139,3 +145,45 @@ def get_config(name=None):
     if name not in configs:
         raise ImproperlyConfigured(f'Unknown backup config {name!r} - available: {", ".join(configs)}')
     return BackupConfig(name, configs[name])
+
+
+def safe_config(name):
+    """get_config() without the exception - None when the config does not exist or its
+    settings are broken. The web UI lists every destination and must not fail on the one
+    that needs fixing; storage_setup.check_config does the same for the setup page."""
+    try:
+        return get_config(name)
+    except Exception:  # noqa: BLE001 - a broken config is exactly what is being described
+        return None
+
+
+def selected_config_name(name=None):
+    """Which destination the web UI is working on: the requested one when it exists, else
+    the first that includes the database - the UI opens on the database page, which has
+    nothing to show for a files-only destination."""
+    names = config_names()
+    if name in names:
+        return name
+    for candidate in names:
+        config = safe_config(candidate)
+        if config is not None and config.include_db:
+            return candidate
+    return names[0]
+
+
+def config_index(name):
+    """Position of a config in config_names(). State that cannot carry the name safely
+    uses this: django-modals splits a modal slug on '-', which a config name may contain."""
+    names = config_names()
+    return names.index(name) if name in names else 0
+
+
+def config_at(index):
+    """The config name for a config_index() value, or None (the default config) when there
+    is no such position. Accepts the string a modal slug delivers."""
+    if index is None or index == '':
+        return None
+    try:
+        return config_names()[int(index)]
+    except (TypeError, ValueError, IndexError):
+        return None

@@ -1,5 +1,7 @@
-{{ menus.breadcrumbs.render }}
+{# a tab per BACKUP_CONFIGS destination, then Storage Setup; the breadcrumbs sit inside #}
+<div class="mt-3 mx-4">{{ menus.configs.render }}</div>
 <div class="m-4">
+    {{ menus.breadcrumbs.render }}
     {{ menus.buttons.render }}
     <div class="my-2" id="storage_info">Loading backup storage information</div>
     {% if datatables.schemas %}

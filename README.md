@@ -331,10 +331,10 @@ would use it for. What survives that is exactly the tiers in `lock_days`.
 **Setting up the bucket**
 
 Since the package never creates a bucket or writes a lifecycle rule, the *Storage Setup*
-button on the backup page (`/backup/setup/`) works out what is missing and shows the
-commands to fix it. It has one panel per `BACKUP_CONFIGS` entry - the only page that
-looks beyond the default config - and is strictly read-only: it checks whether the
-bucket exists and reads the rules already on it, and changes nothing.
+tab on the backup page (`/backup/setup/`) works out what is missing and shows the
+commands to fix it. It has one panel per `BACKUP_CONFIGS` entry - every destination at
+once, rather than the one the other pages are on - and is strictly read-only: it checks
+whether the bucket exists and reads the rules already on it, and changes nothing.
 
 For a Backblaze destination it generates commands for the
 [b2 command-line tool v4](https://b2-command-line-tool.readthedocs.io/):
@@ -490,8 +490,21 @@ Running a config:
                            'kwargs': {'config': 'staging'}},
     }
 
-The web UI and un-parameterised tasks use the config named `'default'` (or the only
-entry, if there is exactly one). For the staging pattern, the staging server's own
+The enhanced web UI shows a tab per destination - plus a *Storage Setup* tab, which is
+how that page is reached - and everything on the page (the listings, the backup and
+restore buttons, verify and empty trash) works on the selected destination. It opens on
+the first config that includes the database, since a files-only destination has no
+database page: that config's tab goes straight to its file browser instead. A destination whose settings do not resolve gets a warning tab
+pointing at *Storage Setup*, which is the page that explains it. The selection is in
+the url as `?config=<name>`, so a tab is bookmarkable. Un-parameterised tasks and the
+basic (non-enhanced) UI still use the config named `'default'` - or the only entry, if
+there is exactly one. Config names may contain any characters; the UI never puts the
+name in a modal url.
+
+Note that the file browser's directory index is per config: `/backup/files/0/` is the
+first entry in *that* config's `dirs`.
+
+For the staging pattern, the staging server's own
 settings point a config at the same transfer bucket and `restore_db` pulls from it -
 production never shares its offsite credentials or encryption key with staging. If
 the transfer bucket holds an unencrypted production dump, treat the bucket itself as

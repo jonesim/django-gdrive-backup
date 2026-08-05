@@ -1,5 +1,7 @@
-{{ menus.breadcrumbs.render }}
+{# a tab per BACKUP_CONFIGS destination, then this page; the breadcrumbs sit inside it #}
+<div class="mt-3 mx-4">{{ menus.configs.render }}</div>
 <div class="m-4">
+    {{ menus.breadcrumbs.render }}
     {{ menus.buttons.render }}
     <p class="text-muted">Each configured backup destination is checked below. Nothing on this page
         changes anything &mdash; where something is missing it shows the commands to run.</p>

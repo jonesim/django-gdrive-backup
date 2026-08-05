@@ -13,6 +13,8 @@ class BackupInfo(PermissionRequiredMixin, TemplateView):
     permission_required = 'access_admin'
 
     def get_context_data(self, **kwargs):
+        # always the default config: this fallback UI only exists when django-modals and
+        # friends are not installed, and a single static page has nowhere to pick one
         db = Backup().get_backup_db()
         info = db.storage.storage_info(db.base_backup_dir)
         return {

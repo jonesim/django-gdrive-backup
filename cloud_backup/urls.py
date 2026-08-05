@@ -37,6 +37,10 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
                  name='restore_db'),
             path('modal/confim_backup/<str:slug>/', modals.ConfirmBackupModal.as_view(), name='confirm_backup'),
             path('modal/confirm_empty_trash/', modals.ConfirmEmptyTrashModal.as_view(), name='confirm_empty_trash'),
+            # same name with a slug so the button can say which config's trash to empty;
+            # the argument-less pattern above stays for anything reversing it without one
+            path('modal/confirm_empty_trash/<str:slug>/', modals.ConfirmEmptyTrashModal.as_view(),
+                 name='confirm_empty_trash'),
         ]
 
     urlpatterns = backup_urlpatterns()

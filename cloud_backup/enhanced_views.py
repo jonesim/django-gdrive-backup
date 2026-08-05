@@ -5,21 +5,22 @@ import json
 import os
 from functools import cached_property, partial
 from io import BytesIO
+from urllib.parse import quote
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
 from ajax_helpers.templatetags.ajax_helpers import button_javascript, post_json_js
-from ajax_helpers.utils import ajax_command
+from ajax_helpers.utils import ajax_command, is_ajax
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.http import Http404
+from django.shortcuts import redirect
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 from django_datatables.columns import DateTimeColumn, DatatableColumn, ColumnLink, ColumnBase
 from django_datatables.datatables import DatatableView
-from django_datatables.helpers import row_button
+from django_datatables.helpers import row_button, DUMMY_ID
 from django_menus.menu import AjaxMenuTemplateView, HtmlMenu, MenuItem, MenuItemDisplay, MenuMixin
-from django_modals.datatables import ModalLink
 from django_modals.decorators import ConfirmAjaxMethod
 from django_modals.helper import reverse_modal
 from openpyxl import Workbook
@@ -27,7 +28,7 @@ from openpyxl import Workbook
 from cloud_backup.backup import Backup
 from . import storage_setup
 from .backup_local_files import BackupLocal, local_backup_path
-from .config import config_names
+from .config import config_index, config_names, safe_config, selected_config_name
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
 from .tasks import ajax_backup
 from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
@@ -36,19 +37,135 @@ from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 BADGE_COLOURS = {'Enabled': 'success', 'Disabled': 'danger', 'Suspended': 'warning'}
 
 
-def status_badge(row):
-    """One protection_info/destination_status row as a labelled badge."""
-    colour = BADGE_COLOURS.get(row['status'], 'secondary')
-    html = f'{escape(row["label"])} <span class="badge badge-{colour}">{row["status"]}</span>'
-    if row.get('detail'):
-        html += f' <small class="text-muted">{escape(row["detail"])}</small>'
-    return html
+def status_table(rows):
+    """protection_info/destination_status rows as one aligned table. The folder column is
+    only rendered when something has a folder - versioning, object lock, soft delete and
+    the Google Drive row are about the whole destination, not a key prefix."""
+    folders = any(row.get('folder') for row in rows)
+    folder_header = '<th>Folder</th>' if folders else ''
+    html = ('<table class="table table-sm w-auto mb-0"><thead><tr><th>Check</th>'
+            f'{folder_header}<th>Status</th><th>Detail</th></tr></thead><tbody>')
+    for row in rows:
+        colour = BADGE_COLOURS.get(row['status'], 'secondary')
+        folder = (f'<td class="text-monospace text-nowrap">{escape(row.get("folder") or "")}</td>'
+                  if folders else '')
+        html += (f'<tr><td class="text-nowrap">{escape(row["label"])}</td>{folder}'
+                 f'<td><span class="badge badge-{colour}">{escape(row["status"])}</span></td>'
+                 f'<td class="text-muted">{escape(row.get("detail") or "")}</td></tr>')
+    return html + '</tbody></table>'
 
 
-def restore_table_button(text):
-    return ModalLink(row=True, base64=True, modal_name='cloud_backup:confirm_restore_db',
-                     css_class='btn btn-danger btn-sm', title='Restore', button_text=text,
-                     enabled=allowed_to_restore())
+def config_url(url_name, *url_args, config=None):
+    """A backup page url that stays on the selected destination.
+
+    The config rides in the query string rather than the path: the enhanced patterns end
+    in a single-segment <str:schema> catch-all that a /<config>/ prefix would be
+    ambiguous with, the url names branded projects reverse have to stay as they are, and
+    ajax_helpers posts to window.location while datatables posts to
+    window.location.search - so the tables, row buttons and storage info carry it for
+    free. Modal urls cannot use it: show_modal appends ?modal_id=..., which would leave
+    the url with two query strings - modals carry the config in their slug instead."""
+    url = reverse(url_name, args=url_args)
+    return f'{url}?config={quote(config)}' if config else url
+
+
+class ConfigTab(MenuItem):
+    """One destination in the tab strip. Which tab is current has to be set by the view:
+    every database tab reverses the same url name and they differ only by ?config=,
+    which neither of MenuItem.active's comparisons looks at."""
+
+    def __init__(self, *args, active=False, **kwargs):
+        self._active = active
+        super().__init__(*args, link_type=MenuItem.HREF, **kwargs)
+
+    @property
+    def active(self):
+        return self._active
+
+
+class BackupConfigMixin:
+    """Which BACKUP_CONFIGS destination a page is working on, and the tab strip that
+    switches between them - one tab per destination plus Storage Setup, which is how that
+    page is reached. Reads config_names()/safe_config() only - never Backup() - so it is
+    safe on the storage setup page, whose job is describing configs that do not resolve."""
+
+    # the setup page is one of the tabs rather than a destination, so it says so itself
+    setup_page = False
+
+    @cached_property
+    def config_names(self):
+        return config_names()
+
+    @cached_property
+    def config_name(self):
+        return selected_config_name(self.request.GET.get('config'))
+
+    @cached_property
+    def config_index(self):
+        return config_index(self.config_name)
+
+    @property
+    def multi_config(self):
+        """A single-destination install keeps exactly the urls and markup it had before
+        named configs existed: no tabs, and no ?config= on any link."""
+        return len(self.config_names) > 1
+
+    @property
+    def url_config(self):
+        return self.config_name if self.multi_config else None
+
+    def page_item(self, url_name, text, *url_args, **kwargs):
+        """Menu tuple for a link to another backup page, keeping the selected config."""
+        return (config_url(url_name, *url_args, config=self.url_config), text,
+                dict(kwargs, link_type=MenuItem.HREF))
+
+    def config_home_url(self, name, config=None):
+        """Where a config's tab goes: its database page, its file browser when the config
+        has no database, or the setup page when the config does not resolve - that is the
+        page that explains why."""
+        config = config if config is not None else safe_config(name)
+        # a single-destination install carries no ?config= at all
+        name = name if self.multi_config else None
+        if config is None:
+            return config_url('cloud_backup:storage_setup', config=name)
+        if config.include_db:
+            return config_url('cloud_backup:backup_info', config=name)
+        if len(config.dirs) == 1:
+            return config_url('cloud_backup:backup_files', 0, config=name)
+        return config_url('cloud_backup:backup_files_root', config=name)
+
+    def unusable_config_redirect(self, request, require_db=False):
+        """Send a page load for a destination this page cannot show to one that explains
+        it: the setup page when the config's settings do not resolve, the file browser
+        when the page needs a database and the config has it turned off. Page loads only -
+        a stale table post must not be answered with a redirect."""
+        if request.method != 'GET' or is_ajax(request):
+            return None
+        config = safe_config(self.config_name)
+        if config is None or (require_db and not config.include_db):
+            return redirect(self.config_home_url(self.config_name, config))
+        return None
+
+    def add_config_tabs(self):
+        """One tab per destination, then Storage Setup. The strip is built even for a
+        single destination, because the setup page has no other way in."""
+        menu = self.add_menu('configs', menu_type='tabs')
+        for name in self.config_names:
+            config = safe_config(name)
+            if config is None:
+                icon = 'fas fa-exclamation-triangle text-danger'
+            elif config.include_db:
+                icon = 'fas fa-database'
+            else:
+                icon = 'fas fa-folder'
+            # with one destination its name says nothing - the tab names the page instead
+            menu.add_items(ConfigTab(self.config_home_url(name, config),
+                                     MenuItemDisplay(name if self.multi_config else 'Backup',
+                                                     font_awesome=icon),
+                                     active=not self.setup_page and name == self.config_name))
+        menu.add_items(ConfigTab(config_url('cloud_backup:storage_setup', config=self.url_config),
+                                 MenuItemDisplay('Storage Setup', font_awesome='fas fa-cog'),
+                                 active=self.setup_page))
 
 
 def overwrite_visible_cell(table, row_no, column_name, html):
@@ -61,13 +178,23 @@ def overwrite_visible_cell(table, row_no, column_name, html):
                         html=html)
 
 
-class TableBackup(AjaxTaskMixin, AjaxHelpers):
+class TableBackup(BackupConfigMixin, AjaxTaskMixin, AjaxHelpers):
 
     tasks = {'backup': ajax_backup}
 
     @cached_property
     def backup(self):
-        return Backup()
+        return Backup(config=self.config_name)
+
+    def ajax_check_result(self, **kwargs):
+        """AjaxTaskMixin polls request.path, which drops the ?config= the rest of the page
+        carries - each poll re-enters dispatch and would rebuild the tables, and contact
+        the storage, for the wrong destination."""
+        path, self.request.path = self.request.path, self.request.get_full_path()
+        try:
+            return super().ajax_check_result(**kwargs)
+        finally:
+            self.request.path = path
 
     # noinspection PyUnresolvedReferences
     def set_cell_commands(self, table_id, row_no, html):
@@ -78,16 +205,17 @@ class TableBackup(AjaxTaskMixin, AjaxHelpers):
 
     def row_backup_schema(self, *, row_no, table_id, **_kwargs):
         self.set_cell_commands(table_id, row_no, '<div class="spinner-border spinner-border-sm"></div> Backing up')
+        # the config travels as its index, the same as it does in a modal slug
         if table_id == 'schema_tables':
             if hasattr(self, 'schema'):
                 # noinspection PyUnresolvedReferences
-                task_kwargs = dict(schema=self.schema, table=row_no[1:])
+                task_kwargs = dict(config=self.config_index, schema=self.schema, table=row_no[1:])
             else:
                 # noinspection PyUnresolvedReferences
-                task_kwargs = dict(schema=self.kwargs['schema'], table=row_no[1:])
+                task_kwargs = dict(config=self.config_index, schema=self.kwargs['schema'], table=row_no[1:])
         else:
             # noinspection PyUnresolvedReferences
-            task_kwargs = dict(schema=row_no[1:])
+            task_kwargs = dict(config=self.config_index, schema=row_no[1:])
         return self.start_task('backup', task_kwargs=task_kwargs, result_kwargs=dict(table_id=table_id, row_no=row_no))
 
     def task_state_success(self, *, table_id, row_no, **_kwargs):
@@ -119,40 +247,47 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
     permission_required = 'access_admin'
 
     def setup_menu(self):
+        self.add_config_tabs()
         self.add_menu('buttons', menu_type='buttons')
+        # slugs carry the config as its index in config_names(): a modal slug is split on
+        # '-', which a config name is allowed to contain (schema names are not)
+        config_slug = f'config-{self.config_index}'
         if self.schema:
             self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(
-                ('cloud_backup:backup_info', 'backup'),
-                ('cloud_backup:schema_info', self.schema, {'url_args': [self.schema]}),
+                self.page_item('cloud_backup:backup_info', 'backup'),
+                self.page_item('cloud_backup:schema_info', self.schema, self.schema),
             )
             self.menus['buttons'].add_items(
-                (f'cloud_backup:confirm_backup,schema-{self.schema}', f'BACKUP {self.schema}'),
-                ('cloud_backup:schema_tables', 'View Tables', {'url_args': [self.schema]}),
+                (f'cloud_backup:confirm_backup,{config_slug}-schema-{self.schema}', f'BACKUP {self.schema}'),
+                self.page_item('cloud_backup:schema_tables', 'View Tables', self.schema),
             )
         else:
+            config = self.backup.config
             self.menus['buttons'].add_items(
-                ('cloud_backup:confirm_backup,-', 'Backup database'),
-                ('cloud_backup:confirm_backup,all_schemas-True', 'Backup All Schemas',
-                 {'visible': len(self.schemas) > 1}),
-                ('cloud_backup:confirm_backup,include_db-False', 'Backup Files',
-                 {'visible': bool(self.backup.config.dirs or self.backup.config.s3_dirs)}),
-                (f'cloud_backup:schema_info,{self.schemas[0][0]}', f'View {self.schemas[0][0]}',
-                 {'visible': len(self.schemas) == 1}),
-                ('cloud_backup:confirm_empty_trash', 'Empty Trash',
+                (f'cloud_backup:confirm_backup,{config_slug}', 'Backup database',
+                 {'visible': config.include_db}),
+                (f'cloud_backup:confirm_backup,{config_slug}-all_schemas-True', 'Backup All Schemas',
+                 {'visible': config.include_db and len(self.schemas) > 1}),
+                (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
+                 {'visible': bool(config.dirs or config.s3_dirs)}),
+                self.page_item('cloud_backup:schema_info', f'View {self.schemas[0][0]}', self.schemas[0][0],
+                               visible=config.include_db and len(self.schemas) == 1),
+                (f'cloud_backup:confirm_empty_trash,{config_slug}', 'Empty Trash',
                  {'css_classes': 'btn btn-warning', 'visible': self.backup.storage.supports_trash}),
                 # with a single backup dir the root listing is a pointless extra
                 # click, so link straight into it
-                ('cloud_backup:backup_files', 'Files',
-                 {'url_args': [0], 'visible': len(self.backup.config.dirs) == 1}),
-                ('cloud_backup:backup_files_root', 'Files',
-                 {'visible': len(self.backup.config.dirs) > 1}),
-                ('cloud_backup:storage_setup', 'Storage Setup',
-                 {'css_classes': 'btn btn-outline-secondary'}),
+                self.page_item('cloud_backup:backup_files', 'Files', 0,
+                               visible=len(config.dirs) == 1),
+                self.page_item('cloud_backup:backup_files_root', 'Files',
+                               visible=len(config.dirs) > 1),
             )
 
     # noinspection PyAttributeOutsideInit
     def dispatch(self, request, *args, schema=None, **kwargs):
         self.schema = schema
+        response = self.unusable_config_redirect(request, require_db=True)
+        if response:
+            return response
         self.schemas = get_schemas()
         return super().dispatch(request, *args, **kwargs)
 
@@ -182,7 +317,8 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
         return self.command_response('show_modal',
                                      modal=reverse_modal('cloud_backup:restore_db',
                                                          base64={'pk': table_row[0],
-                                                                 'drop_schema': self.schema or 'public'}))
+                                                                 'drop_schema': self.schema or 'public',
+                                                                 'config': self.config_index}))
 
     @staticmethod
     def setup_deleted_files(table):
@@ -201,7 +337,10 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
         table.add_columns(
             'schema', 'size',
             ColumnLink(
-                column_name='view_schema', link_ref_column='schema', url_name='cloud_backup:schema_info',
+                column_name='view_schema', link_ref_column='schema',
+                # a url already containing the dummy id is used as it is, so the schema
+                # link can keep the ?config= the rest of the page carries
+                url_name=config_url('cloud_backup:schema_info', DUMMY_ID, config=self.url_config),
                 link_html='<button class="btn btn-sm btn-outline-dark">VIEW</button>'
             ),
             ColumnBase(column_name='Backup',
@@ -228,9 +367,9 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
         html = f'Backup Folder {location}'
         if info['used'] is not None and info['limit'] is not None:
             gb = 1024 * 1024 * 1024
-            html += '<br>{:.1f} GB Used of {:.1f} GB'.format(info['used'] / gb, info['limit'] / gb)
-        for p in db.storage.protection_info(**db.tier_policy()):
-            html += '<br>' + status_badge(p)
+            html += ' &mdash; {:.1f} GB Used of {:.1f} GB'.format(info['used'] / gb, info['limit'] / gb)
+        html = f'<div class="mb-2">{html}</div>'
+        html += status_table(db.storage.protection_info(**db.tier_policy()))
         return self.command_response('html', selector='#storage_info', html=html)
 
     def get_table_query(self, table, **kwargs):
@@ -251,11 +390,18 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
     permission_required = 'access_admin'
 
+    def dispatch(self, request, *args, **kwargs):
+        response = self.unusable_config_redirect(request, require_db=True)
+        if response:
+            return response
+        return super().dispatch(request, *args, **kwargs)
+
     def setup_menu(self):
+        self.add_config_tabs()
         self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(
-            ('cloud_backup:backup_info', 'backup'),
-            ('cloud_backup:schema_info', self.kwargs['schema'], {'url_args': [self.kwargs['schema']]}),
-            ('cloud_backup:schema_tables', 'tables', {'url_args': [self.kwargs['schema']]}),
+            self.page_item('cloud_backup:backup_info', 'backup'),
+            self.page_item('cloud_backup:schema_info', self.kwargs['schema'], self.kwargs['schema']),
+            self.page_item('cloud_backup:schema_tables', 'tables', self.kwargs['schema']),
         )
 
     def add_tables(self):
@@ -266,9 +412,22 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
         table.add_columns('.id', 'ip_address', 'table', 'name', 'size', 'encrypted',
                           DatatableColumn(column_name='tier', field='tier', enabled=self.backup.config.db_tiers),
                           DateTimeColumn(title='Backup Date', field='created'),
-                          restore_table_button('Restore Table'))
+                          DatatableColumn(column_name='restore', enabled=allowed_to_restore(),
+                                          render=[row_button('restore', 'Restore Table',
+                                                             button_classes='btn btn-danger btn-sm')]))
         table.sort('-created')
         table.table_options['stateSave'] = False
+
+    def row_restore(self, row_data, **_kwargs):
+        """The confirm modal is opened here rather than by a ModalLink column: a datatable
+        modal link builds its whole slug client-side, so the selected config has to be put
+        into the base64 payload server side."""
+        if not allowed_to_restore():
+            return self.command_response('message', text=RESTORE_BLOCKED_MESSAGE)
+        return self.command_response('show_modal',
+                                     modal=reverse_modal('cloud_backup:confirm_restore_db',
+                                                         base64={'pk': json.loads(row_data)[0],
+                                                                 'config': self.config_index}))
 
     def row_download_xls(self,  **kwargs):
         workbook = Workbook()
@@ -328,6 +487,9 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
     def dispatch(self, request, *args, backup_dir=None, sub_path='', **kwargs):
         self.backup_dir = backup_dir
         self.sub_path = sub_path.strip('/')
+        response = self.unusable_config_redirect(request)
+        if response:
+            return response
         if backup_dir is not None:
             if not 0 <= backup_dir < len(self.backup.config.dirs):
                 raise Http404('No such backup directory')
@@ -348,18 +510,20 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
         return folder
 
     def setup_menu(self):
-        crumbs = [('cloud_backup:backup_info', 'backup'),
-                  ('cloud_backup:backup_files_root', 'Files')]
+        self.add_config_tabs()
+        crumbs = [self.page_item('cloud_backup:backup_info', 'backup'),
+                  self.page_item('cloud_backup:backup_files_root', 'Files')]
         if self.backup_dir is not None:
-            crumbs.append(('cloud_backup:backup_files', self.dest_name, {'url_args': [self.backup_dir]}))
+            crumbs.append(self.page_item('cloud_backup:backup_files', self.dest_name, self.backup_dir))
             segments = self.sub_path.split('/') if self.sub_path else []
             for n, segment in enumerate(segments):
-                crumbs.append(('cloud_backup:backup_files_path', segment,
-                               {'url_args': [self.backup_dir, '/'.join(segments[:n + 1])]}))
+                crumbs.append(self.page_item('cloud_backup:backup_files_path', segment,
+                                             self.backup_dir, '/'.join(segments[:n + 1])))
         self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(*crumbs)
         if self.backup_dir is not None:
             self.add_menu('buttons', menu_type='buttons').add_items(
-                (f'cloud_backup:verify_files,backup_dir-{self.backup_dir}', 'Verify All Files'))
+                (f'cloud_backup:verify_files,config-{self.config_index}-backup_dir-{self.backup_dir}',
+                 'Verify All Files'))
 
     def add_tables(self):
         self.add_table('files')
@@ -383,7 +547,7 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
     def get_table_query(self, table, **kwargs):
         if self.backup_dir is None:
             return [self.folder_row(f'dir{index}', dest_name,
-                                    reverse('cloud_backup:backup_files', args=[index]))
+                                    config_url('cloud_backup:backup_files', index, config=self.url_config))
                     for index, (_source_dir, dest_name) in enumerate(self.backup.config.dirs)]
         if self.dest_folder is None:
             return []
@@ -396,7 +560,8 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
                 # up with a jQuery selector - storage ids can be object keys whose '/'
                 # and '.' break the selector, so use a digest of the path instead
                 'd' + hashlib.md5(sub_rel.encode()).hexdigest(), sub['name'],
-                reverse('cloud_backup:backup_files_path', args=[self.backup_dir, sub_rel])))
+                config_url('cloud_backup:backup_files_path', self.backup_dir, sub_rel,
+                           config=self.url_config)))
         verify_button = row_button('verify', 'Verify',
                                    button_classes='btn btn-outline-primary btn-sm')['html']
         # metadata is always fetched so the encrypted column is accurate and the
@@ -487,7 +652,7 @@ def setup_panel(check, copy_button=None, shell_buttons=''):
     if check['storage_error']:
         html += (f'<p class="text-danger">The destination could not be contacted: '
                  f'{escape(check["storage_error"])}</p>')
-    html += ''.join(f'<div>{status_badge(row)}</div>' for row in check['rows'])
+    html += status_table(check['rows'])
     if check['guidance']:
         html += '<ul class="mt-3">' + ''.join(f'<li>{escape(line)}</li>' for line in check['guidance']) + '</ul>'
     if check['commands']:
@@ -505,18 +670,22 @@ def setup_panel(check, copy_button=None, shell_buttons=''):
     return html + '</div>'
 
 
-class StorageSetupBaseView(BackupContentMixin, PermissionRequiredMixin, AjaxMenuTemplateView):
+class StorageSetupBaseView(BackupConfigMixin, BackupContentMixin, PermissionRequiredMixin, AjaxMenuTemplateView):
     """Read-only page describing every configured destination and the commands to set one
-    up. Deliberately not a TableBackup: that resolves the default config on first access,
-    which raises when the configs are exactly what needs fixing."""
+    up - a panel per destination, whichever one the other pages are on. Deliberately not a
+    TableBackup: that resolves a config on first access, which raises when the configs are
+    exactly what needs fixing. BackupConfigMixin is safe here - it only reads
+    config_names()/safe_config(), never Backup()."""
 
     permission_required = 'access_admin'
     content_template = 'cloud_backup/storage_setup_content.html'
+    setup_page = True
 
     def setup_menu(self):
+        self.add_config_tabs()
         self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(
-            ('cloud_backup:backup_info', 'backup'),
-            ('cloud_backup:storage_setup', 'storage setup'),
+            (self.config_home_url(self.config_name), 'backup', {'link_type': MenuItem.HREF}),
+            self.page_item('cloud_backup:storage_setup', 'storage setup'),
         )
 
     def get_context_data(self, **kwargs):

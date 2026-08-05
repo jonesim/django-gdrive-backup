@@ -7,6 +7,7 @@ from django_modals.task_modals import TaskModal
 from ajax_helpers.utils import is_ajax
 
 from cloud_backup.backup import Backup
+from cloud_backup.config import config_at
 from cloud_backup.utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 
@@ -29,10 +30,13 @@ class ConfirmRestoreModal(RestoreAllowedMixin, Modal):
     modal_title = 'Warning'
 
     def get_modal_buttons(self):
+        # the payload is the dict the restore row buttons build, or a bare row list from a
+        # datatable ModalLink; anything past the pk has to be forwarded explicitly
+        payload = {'pk': self.slug['base64'][0] if 'base64' in self.slug else self.slug['pk']}
+        if 'config' in self.slug:
+            payload['config'] = self.slug['config']
         return [
-            modal_button('Confirm', ajax_modal_redirect(
-                'cloud_backup:restore_db', base64={'pk': self.slug['base64'][0]}
-            ), 'btn-danger'),
+            modal_button('Confirm', ajax_modal_redirect('cloud_backup:restore_db', base64=payload), 'btn-danger'),
             modal_button('Cancel', 'close', 'btn-secondary')
         ]
 
@@ -85,7 +89,7 @@ class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
         return 'Are you sure you want to permanently remove deleted items?'
 
     def button_empty_trash(self, **_kwargs):
-        Backup().storage.empty_trash()
+        Backup(config=config_at(self.slug.get('config'))).storage.empty_trash()
         return self.command_response('reload')
 
     def get_modal_buttons(self):

@@ -6,6 +6,7 @@ from django.db import connection
 
 from .backup import Backup
 from .backup_local_files import BackupLocal
+from .config import config_at
 from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -68,13 +69,18 @@ class StateLogger:
 try:
     from ajax_helpers.utils import ajax_command
 
+    # none of these three may gain a config parameter: django-modals runs a task whose
+    # signature has one synchronously, just to read the modal's display config. The web UI
+    # puts the config in the slug instead, as its index in config_names()
+
     @shared_task(bind=True)
     def ajax_backup(self, **kwargs):
-        task_kwargs = kwargs['slug'] if 'slug' in kwargs else kwargs
+        task_kwargs = dict(kwargs['slug'] if 'slug' in kwargs else kwargs)
+        config = config_at(task_kwargs.pop('config', None))
         # slug values are strings, so boolean kwargs (include_db-False, all_schemas-True)
         # must be converted before reaching backup_db_and_folders
         task_kwargs = {k: v == 'True' if v in ('True', 'False') else v for k, v in task_kwargs.items()}
-        Backup(StateLogger(self)).backup_db_and_folders(**task_kwargs)
+        Backup(StateLogger(self), config=config).backup_db_and_folders(**task_kwargs)
         return {'commands': [ajax_command('message', text='Backup Complete'), ajax_command('reload')]}
 
     @shared_task(bind=True)
@@ -88,12 +94,14 @@ try:
             with connection.cursor() as cursor:
                 cursor.execute(f'DROP SCHEMA "{drop_schema}" CASCADE')
                 cursor.execute(f'CREATE SCHEMA "{drop_schema}"')
-        Backup(StateLogger(self)).get_backup_db().restore_db_from_storage(file_id=slug['pk'])
+        backup = Backup(StateLogger(self), config=config_at(slug.get('config')))
+        backup.get_backup_db().restore_db_from_storage(file_id=slug['pk'])
         return {'commands': [ajax_command('message', text='Restore Complete'), ajax_command('reload')]}
 
     @shared_task(bind=True)
     def ajax_verify_files(self, *, slug, **_kwargs):
-        backup = Backup(StateLogger(self))
+        backup = Backup(StateLogger(self), config=config_at(slug.get('config')))
+        # the index is into this config's dirs, not the default config's
         source_dir, dest_name = backup.config.dirs[int(slug['backup_dir'])]
         local = BackupLocal(backup.storage, backup.config.root, backup.logger, config=backup.config)
         results = local.verify_folder(source_dir, dest_name)
