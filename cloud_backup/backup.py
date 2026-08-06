@@ -55,8 +55,16 @@ class Backup:
                         config=self.config)
 
     def backup_db_and_folders(self, schema=None, table=None, include_db=True, all_schemas=False,
-                              include_folders=True, include_s3_folders=True, sub_folder=None):
+                              include_folders=True, include_s3_folders=True, sub_folder=None,
+                              backup_dir=None):
+        """:param backup_dir: index into config.dirs, to back up one configured folder
+        rather than all of them - the same index the file browser urls use
+        """
         changed_files = []
+        if backup_dir is not None and not 0 <= backup_dir < len(self.config.dirs):
+            # checked up front so an index into a config with no dirs at all is an
+            # error rather than a run that silently backs nothing up
+            raise IndexError(f'No backup directory {backup_dir} in config {self.config.name!r}')
         if include_db and self.config.include_db:
             schemas = [s[0] for s in get_schemas()] if all_schemas else [schema]
             for s in schemas:
@@ -72,12 +80,14 @@ class Backup:
                 self.promote_db_tiers(resume=True, warn_empty=False)
 
         if include_folders and self.config.dirs:
+            dirs = self.config.dirs if backup_dir is None else [self.config.dirs[backup_dir]]
             b = BackupLocal(self.storage, self.config.root, self.logger, config=self.config)
-            for backup in self.config.dirs:
+            for backup in dirs:
                 b.backup_folder(*backup)
             changed_files += b.changed_files
 
-        if include_s3_folders and self.config.s3_dirs:
+        # backup_dir names a local folder, so an S3 source can never be what was asked for
+        if include_s3_folders and self.config.s3_dirs and backup_dir is None:
             s3_backup = BackupS3(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY,
                                  self.storage,
                                  self.config.root,

@@ -46,6 +46,11 @@ class Command(BaseCommand):
                             action='store_true',
                             default=False)
 
+        parser.add_argument('--backup_dir',
+                            type=int,
+                            help='Back up only this entry of BACKUP_DIRS (its index, as used by the web '
+                                 'file browser) rather than every configured folder')
+
         parser.add_argument('-sub_folder',
                             type=str)
 
@@ -94,4 +99,5 @@ class Command(BaseCommand):
                                                       schema=options['schema'],
                                                       table=options['table'],
                                                       sub_folder=options['sub_folder'],
+                                                      backup_dir=options['backup_dir'],
                                                       **folder_kwargs)

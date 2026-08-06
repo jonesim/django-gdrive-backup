@@ -626,11 +626,19 @@ and compares it with the stored checksum, reporting:
 `Verify All Files` runs the same comparison over the whole directory as a
 celery task (the worker must be running) and reports a summary.
 
-The browser and verification are read-only, require the same `access_admin`
-permission as the rest of the management page, and always use the default
-backup config. Note that on an S3-compatible destination with client-side
-encryption enabled, listing the checksums costs one metadata request per file,
-so the page can be slow to load for very large trees.
+The browser carries the same backup buttons as the management page, so a
+destination that has no database page - a config with `db` off, whose tab opens
+the browser - can still be backed up from the web UI. Its root listing has
+`Backup Files`, and inside one directory there is a `Backup <directory>` button
+that backs up just that entry of `BACKUP_DIRS` (the whole directory, not the
+sub-folder being browsed). The equivalent on the command line is
+`backup_website --folders_only --backup_dir <index>`.
+
+The browser and verification are read-only and require the same `access_admin`
+permission as the rest of the management page; the backup buttons, like every
+other backup button, require a superuser. Note that on an S3-compatible
+destination with client-side encryption enabled, listing the checksums costs one
+metadata request per file, so the page can be slow to load for very large trees.
 
 **Configure S3 folder backups**
 

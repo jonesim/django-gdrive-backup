@@ -80,6 +80,8 @@ try:
         # slug values are strings, so boolean kwargs (include_db-False, all_schemas-True)
         # must be converted before reaching backup_db_and_folders
         task_kwargs = {k: v == 'True' if v in ('True', 'False') else v for k, v in task_kwargs.items()}
+        if 'backup_dir' in task_kwargs:
+            task_kwargs['backup_dir'] = int(task_kwargs['backup_dir'])
         Backup(StateLogger(self), config=config).backup_db_and_folders(**task_kwargs)
         return {'commands': [ajax_command('message', text='Backup Complete'), ajax_command('reload')]}
 

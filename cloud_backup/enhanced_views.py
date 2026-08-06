@@ -520,10 +520,26 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
                 crumbs.append(self.page_item('cloud_backup:backup_files_path', segment,
                                              self.backup_dir, '/'.join(segments[:n + 1])))
         self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(*crumbs)
-        if self.backup_dir is not None:
-            self.add_menu('buttons', menu_type='buttons').add_items(
-                (f'cloud_backup:verify_files,config-{self.config_index}-backup_dir-{self.backup_dir}',
-                 'Verify All Files'))
+        self.add_menu('buttons', menu_type='buttons')
+        config_slug = f'config-{self.config_index}'
+        config = self.backup.config
+        if self.backup_dir is None:
+            self.menus['buttons'].add_items(
+                (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
+                 {'visible': bool(config.dirs or config.s3_dirs)}),
+            )
+        else:
+            self.menus['buttons'].add_items(
+                # backs up the whole backup directory, not the sub_path being browsed,
+                # so it is labelled with the directory rather than 'this folder'
+                (f'cloud_backup:confirm_backup,{config_slug}-include_db-False'
+                 f'-backup_dir-{self.backup_dir}', f'Backup {self.dest_name}'),
+                # nothing more than the button above would do on a single-folder config
+                (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
+                 {'visible': len(config.dirs) > 1 or bool(config.s3_dirs)}),
+                (f'cloud_backup:verify_files,{config_slug}-backup_dir-{self.backup_dir}',
+                 'Verify All Files'),
+            )
 
     def add_tables(self):
         self.add_table('files')
