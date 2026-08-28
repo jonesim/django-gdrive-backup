@@ -370,6 +370,11 @@ Points the page makes, and the reasons behind them:
   `--name-prefix` scopes the key to the backup root so it cannot touch anything else in
   the bucket.
 
+  A `restore_only` config gets a different key entirely -
+  `listBuckets,listFiles,readFiles,readBuckets`, enough to find and download another
+  machine's backups and nothing more - and no bucket commands at all, since the bucket and
+  its lifecycle rules belong to the machine that writes them.
+
   B2 gates each bucket read behind its own capability, and the three `readBucket*` ones
   above exist only in the S3-compatible API - there is no B2 native equivalent, so they
   are easy to miss. Without them the queries fail with `AccessDenied` and the page shows
@@ -470,7 +475,9 @@ unencrypted database copy that a staging server restores from:
 
 Config keys: `storage` (a `BACKUP_STORAGE`-style dict), `encryption`, `db` (include
 the database, default True), `db_dir`, `dirs` (as `BACKUP_DIRS`), `s3_dirs` (as
-`S3_BACKUP_DIRS`), `retention`, `changed_files`, `db_tiers`. **A key absent from a config
+`S3_BACKUP_DIRS`), `retention`, `changed_files`, `db_tiers`, `restore_only` (read this
+destination, never write to it - see *Live, staging and local machines* below).
+**A key absent from a config
 inherits the corresponding legacy global setting** (`BACKUP_STORAGE`,
 `BACKUP_ENCRYPTION`, `BACKUP_DIRS`, ...), so shared values can stay in the globals -
 but note that means a config without `'dirs': []` backs up the global `BACKUP_DIRS`.
@@ -513,6 +520,74 @@ has.
 
 Backups made by one config restore with that config's key: restoring an encrypted
 backup through a config with a different key (or none) fails cleanly.
+
+
+**Live, staging and local machines**
+
+The usual three-role setup: one server produces the backups, and the others restore them
+to get a copy of live data to work with.
+
+| Role | Backs up | Restores | Backup root |
+|---|---|---|---|
+| Live | yes, on a schedule | no - web restore off | `backup/live` |
+| Staging | occasionally, its own data | from live's dumps | `backup/staging` |
+| Local machine | occasionally, its own data | from live's dumps | `backup/local` |
+
+Staging never touches the live server: it reads live's dumps out of the bucket live backs
+up to. That destination is marked **`'restore_only': True`**, which is what stops staging
+writing into another machine's backups - every write refuses
+(`RestoreOnlyConfig`), the web UI offers no backup, empty-trash or undelete action for it,
+and *Storage Setup* generates a read-only key for it instead of the usual one. It is a
+config setting rather than a matter of credentials because machines commonly share one
+encrypted settings file, so the same credential is on all of them and only the config can
+tell the roles apart.
+
+    # live/settings.py
+    BACKUP_ALLOW_RESTORE = False              # also the default once DEBUG is off
+    BACKUP_ENCRYPTION = True
+    BACKUP_STORAGE = {'backend': 's3', 'b2': True, 'bucket': 'my-backups',
+                      'access_key_id': access_key_id, 'secret_key': secret_key,
+                      'root': 'backup/live'}
+    BACKUP_DIRS = [(MEDIA_ROOT, 'media')]
+
+    # staging/settings.py - the local machine is the same with root 'backup/local'
+    BACKUP_ALLOW_RESTORE = True               # restore from the management page
+    BACKUP_ENCRYPTION = True                  # the shared settings key, so live's dumps decrypt
+    BACKUP_STORAGE = {...as above...}
+    BACKUP_CONFIGS = {
+        'default': {'storage': dict(BACKUP_STORAGE, root='backup/staging')},
+        'live': {'storage': dict(BACKUP_STORAGE, root='backup/live'),
+                 'restore_only': True,
+                 'dirs': [], 's3_dirs': []},   # the database is what gets restored
+    }
+
+Restoring live's latest dump on staging:
+
+    python manage.py restore_db --config live
+
+or from the management page: pick the *live* tab and use **Drop Restore** on a dump.
+
+Points worth getting right:
+
+- **Give each role its own `root`.** Pruning is scoped to the machine's own public IP so
+  servers do not delete each other's dumps, but `db_tiers` promotion has no such filter -
+  a staging dump written into live's prefix would be promoted into live's monthly archive.
+  Separate roots keep each machine's retention entirely its own.
+- **`BACKUP_ALLOW_RESTORE` off on live**, which is what it already is once `DEBUG` is off.
+  It is enforced server-side on every web restore endpoint. `manage.py restore_db` is not
+  affected by it, so disaster recovery on live stays possible from the command line.
+- **Never schedule `cloud_backup.tasks.backup` with `kwargs={'config': 'live'}`** anywhere
+  but live. It would refuse anyway, but a beat schedule that raises every night is noise.
+- The same encrypted settings file on every machine means `BACKUP_ENCRYPTION = True`
+  derives the same key everywhere, so staging can decrypt live's dumps with nothing extra
+  to configure. If the machines do **not** share settings, either give the restore_only
+  config live's key explicitly, or have live write a second, unencrypted copy to a
+  transfer bucket that staging reads (the *Multiple backup configurations* example above).
+- Restoring writes to `DATABASES['default']` of the machine doing the restoring - the
+  config picks which dumps to read, never where they land.
+
+If a machine only ever restores and backs nothing up at all, `BACKUP_RESTORE_ONLY = True`
+sets the flag globally without needing `BACKUP_CONFIGS`.
 
 
 **Management commands**

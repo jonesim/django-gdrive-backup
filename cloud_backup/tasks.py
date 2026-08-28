@@ -27,7 +27,7 @@ def backup_all_schemas(config=None):
 
 @shared_task
 def empty_trash(config=None):
-    Backup(config=config).storage.empty_trash()
+    Backup(config=config).empty_trash()
 
 
 @shared_task

@@ -93,7 +93,9 @@
                 {% endif %}
             </td>
             <td>
-                <buton class="btn" onclick="backup_now()">BACKUP NOW</buton>
+                {% if not restore_only %}
+                    <buton class="btn" onclick="backup_now()">BACKUP NOW</buton>
+                {% endif %}
             </td>
         </tr>
         {% if supports_trash %}

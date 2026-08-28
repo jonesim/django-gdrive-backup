@@ -31,7 +31,7 @@ from .backup_local_files import BackupLocal, local_backup_path
 from .config import config_index, config_names, safe_config, selected_config_name
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
 from .tasks import ajax_backup
-from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
+from .utils import allowed_to_restore, BACKUP_BLOCKED_MESSAGE, RESTORE_BLOCKED_MESSAGE
 
 
 BADGE_COLOURS = {'Enabled': 'success', 'Disabled': 'danger', 'Suspended': 'warning'}
@@ -154,6 +154,10 @@ class BackupConfigMixin:
             config = safe_config(name)
             if config is None:
                 icon = 'fas fa-exclamation-triangle text-danger'
+            elif config.restore_only:
+                # the roles are worth seeing at a glance: this one is another machine's
+                # destination, which this server only reads
+                icon = 'fas fa-download'
             elif config.include_db:
                 icon = 'fas fa-database'
             else:
@@ -162,6 +166,7 @@ class BackupConfigMixin:
             menu.add_items(ConfigTab(self.config_home_url(name, config),
                                      MenuItemDisplay(name if self.multi_config else 'Backup',
                                                      font_awesome=icon),
+                                     tooltip='Restore only' if config is not None and config.restore_only else None,
                                      active=not self.setup_page and name == self.config_name))
         menu.add_items(ConfigTab(config_url('cloud_backup:storage_setup', config=self.url_config),
                                  MenuItemDisplay('Storage Setup', font_awesome='fas fa-cog'),
@@ -204,6 +209,10 @@ class TableBackup(BackupConfigMixin, AjaxTaskMixin, AjaxHelpers):
         )
 
     def row_backup_schema(self, *, row_no, table_id, **_kwargs):
+        # the column is dropped for a restore_only destination; this is the server-side
+        # half, as it is for restore
+        if self.backup.config.restore_only:
+            return self.command_response('message', text=BACKUP_BLOCKED_MESSAGE)
         self.set_cell_commands(table_id, row_no, '<div class="spinner-border spinner-border-sm"></div> Backing up')
         # the config travels as its index, the same as it does in a modal slug
         if table_id == 'schema_tables':
@@ -258,22 +267,26 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                 self.page_item('cloud_backup:schema_info', self.schema, self.schema),
             )
             self.menus['buttons'].add_items(
-                (f'cloud_backup:confirm_backup,{config_slug}-schema-{self.schema}', f'BACKUP {self.schema}'),
+                (f'cloud_backup:confirm_backup,{config_slug}-schema-{self.schema}', f'BACKUP {self.schema}',
+                 {'visible': not self.backup.config.restore_only}),
                 self.page_item('cloud_backup:schema_tables', 'View Tables', self.schema),
             )
         else:
             config = self.backup.config
+            # a restore_only destination holds another machine's backups - everything that
+            # writes to it is hidden here and refused server-side
+            writable = not config.restore_only
             self.menus['buttons'].add_items(
                 (f'cloud_backup:confirm_backup,{config_slug}', 'Backup database',
-                 {'visible': config.include_db}),
+                 {'visible': config.include_db and writable}),
                 (f'cloud_backup:confirm_backup,{config_slug}-all_schemas-True', 'Backup All Schemas',
-                 {'visible': config.include_db and len(self.schemas) > 1}),
+                 {'visible': config.include_db and writable and len(self.schemas) > 1}),
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
-                 {'visible': bool(config.dirs or config.s3_dirs)}),
+                 {'visible': writable and bool(config.dirs or config.s3_dirs)}),
                 self.page_item('cloud_backup:schema_info', f'View {self.schemas[0][0]}', self.schemas[0][0],
                                visible=config.include_db and len(self.schemas) == 1),
                 (f'cloud_backup:confirm_empty_trash,{config_slug}', 'Empty Trash',
-                 {'css_classes': 'btn btn-warning', 'visible': self.backup.storage.supports_trash}),
+                 {'css_classes': 'btn btn-warning', 'visible': writable and self.backup.storage.supports_trash}),
                 # with a single backup dir the root listing is a pointless extra
                 # click, so link straight into it
                 self.page_item('cloud_backup:backup_files', 'Files', 0,
@@ -293,7 +306,8 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
 
     def add_tables(self):
         self.add_table('files')
-        if self.backup.storage.supports_trash:
+        # the trash table's only action is Undelete, which writes
+        if self.backup.storage.supports_trash and not self.backup.config.restore_only:
             self.add_table('deleted_files')
         if not self.schema and len(self.schemas) > 1:
             self.add_table('schemas')
@@ -343,7 +357,7 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                 url_name=config_url('cloud_backup:schema_info', DUMMY_ID, config=self.url_config),
                 link_html='<button class="btn btn-sm btn-outline-dark">VIEW</button>'
             ),
-            ColumnBase(column_name='Backup',
+            ColumnBase(column_name='Backup', enabled=not self.backup.config.restore_only,
                        render=[row_button('backup_schema', 'Backup', button_classes='btn btn-success btn-sm',)])
         )
         table.table_data = [{'schema': s[0], 'size': s[1]} for s in self.schemas]
@@ -448,7 +462,7 @@ class SchemaTableBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
             ColumnBase(column_name='Download',
                        render=[row_button('download_xls', '<i class="far fa-file-excel"></i>',
                                           button_classes='btn btn-outline-secondary btn-sm', )]),
-            ColumnBase(column_name='Backup',
+            ColumnBase(column_name='Backup', enabled=not self.backup.config.restore_only,
                        render=[row_button('backup_schema', 'Backup', button_classes='btn btn-success btn-sm', )])
         )
         table.table_data = [{'table': s[0], 'size': s[1], 'rows': s[2]}
@@ -523,20 +537,24 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
         self.add_menu('buttons', menu_type='buttons')
         config_slug = f'config-{self.config_index}'
         config = self.backup.config
+        # Verify stays on a restore_only destination - checking another machine's backups
+        # against local files reads only
+        writable = not config.restore_only
         if self.backup_dir is None:
             self.menus['buttons'].add_items(
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
-                 {'visible': bool(config.dirs or config.s3_dirs)}),
+                 {'visible': writable and bool(config.dirs or config.s3_dirs)}),
             )
         else:
             self.menus['buttons'].add_items(
                 # backs up the whole backup directory, not the sub_path being browsed,
                 # so it is labelled with the directory rather than 'this folder'
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False'
-                 f'-backup_dir-{self.backup_dir}', f'Backup {self.dest_name}'),
+                 f'-backup_dir-{self.backup_dir}', f'Backup {self.dest_name}',
+                 {'visible': writable}),
                 # nothing more than the button above would do on a single-folder config
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
-                 {'visible': len(config.dirs) > 1 or bool(config.s3_dirs)}),
+                 {'visible': writable and (len(config.dirs) > 1 or bool(config.s3_dirs))}),
                 (f'cloud_backup:verify_files,{config_slug}-backup_dir-{self.backup_dir}',
                  'Verify All Files'),
             )

@@ -22,6 +22,11 @@ class ChangedFilesError(Exception):
     the backup completed before this was raised."""
 
 
+class RestoreOnlyConfig(Exception):
+    """A write was asked for against a config marked restore_only - the destination holds
+    another machine's backups and this one only reads from it."""
+
+
 class Backup:
 
     def __init__(self, logger=None, config=None):
@@ -36,6 +41,17 @@ class Backup:
         if self._storage is None:
             self._storage = get_storage(self.config.storage_settings)
         return self._storage
+
+    def check_writable(self):
+        """Every path that changes the destination starts here. Restoring does not: it
+        goes through get_backup_db(), which only reads."""
+        if self.config.restore_only:
+            raise RestoreOnlyConfig(f"Backup config {self.config.name!r} is restore_only - nothing is "
+                                    f'written to this destination')
+
+    def empty_trash(self):
+        self.check_writable()
+        self.storage.empty_trash()
 
     def get_backup_db(self, schema=None, table=None, sub_folder=None):
         backup_directory = self.config.db_dir
@@ -60,6 +76,7 @@ class Backup:
         """:param backup_dir: index into config.dirs, to back up one configured folder
         rather than all of them - the same index the file browser urls use
         """
+        self.check_writable()
         changed_files = []
         if backup_dir is not None and not 0 <= backup_dir < len(self.config.dirs):
             # checked up front so an index into a config with no dirs at all is an
@@ -114,6 +131,7 @@ class Backup:
 
         :param resume: cheap mode for the in-backup call - see DbTierPromoter.promote
         """
+        self.check_writable()
         if not self.config.db_tiers:
             self.logger.info('db_tiers is not enabled for this config - nothing to promote')
             return
@@ -152,6 +170,7 @@ class Backup:
         """Ensure everything under the backup root keeps at least the configured
         min_days of object-lock retention. Costs 1-2 API calls per file - schedule
         daily rather than running with every backup."""
+        self.check_writable()
         min_days = self.storage.lock.get('min_days')
         if not min_days:
             self.logger.info('No object-lock min_days configured - nothing to extend')

@@ -22,7 +22,10 @@ class BackupInfo(PermissionRequiredMixin, TemplateView):
             'web_link': info['web_link'],
             'space_used': info['used'] / GB if info['used'] is not None else None,
             'space_available': info['limit'] / GB if info['limit'] is not None else None,
-            'supports_trash': db.storage.supports_trash,
+            # the buttons this page offers all write, so a restore_only default config
+            # (BACKUP_RESTORE_ONLY) shows the listing alone
+            'restore_only': db.config.restore_only,
+            'supports_trash': db.storage.supports_trash and not db.config.restore_only,
             'protection': db.storage.protection_info(**db.tier_policy()),
             'files': db.get_db_backup_files(),
             'deleted_files': db.get_db_backup_files(deleted=True),
@@ -41,5 +44,5 @@ class EmptyTrashView(PermissionRequiredMixin, TemplateView):
     permission_required = 'access_admin'
 
     def get(self, request, *args, **kwargs):
-        Backup().storage.empty_trash()
+        Backup().empty_trash()
         return redirect('cloud_backup:backup-info')

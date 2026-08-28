@@ -224,6 +224,19 @@ BACKUP_CONFIGS = {
     },
 }
 
+# A third role for a staging server or a development machine: the destination another
+# server backs up to, which this one only ever restores from. restore_only refuses every
+# write to it, hides the backup buttons on its tab and makes the setup page generate a
+# read-only key - which matters most when the machines share one encrypted settings file
+# and therefore all hold the same credential:
+# BACKUP_CONFIGS['live'] = {
+#     'storage': dict(BACKUP_STORAGE, root='backup/live'),  # where the live server backs up
+#     'restore_only': True,
+#     'dirs': [],          # the database is what gets restored
+#     's3_dirs': [],
+# }
+# Restore the latest live dump with: manage.py restore_db --config live
+
 # Run it with: manage.py backup_website --db_only --config database
 # Tier promotion happens at the end of every database backup, so the schedule below is a
 # belt-and-braces second pass (it also covers days when no backup runs at all):

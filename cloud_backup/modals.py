@@ -7,8 +7,8 @@ from django_modals.task_modals import TaskModal
 from ajax_helpers.utils import is_ajax
 
 from cloud_backup.backup import Backup
-from cloud_backup.config import config_at
-from cloud_backup.utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
+from cloud_backup.config import config_at, safe_config
+from cloud_backup.utils import allowed_to_restore, BACKUP_BLOCKED_MESSAGE, RESTORE_BLOCKED_MESSAGE
 
 
 class SuperUserMixin(UserPassesTestMixin):
@@ -22,6 +22,26 @@ class RestoreAllowedMixin(SuperUserMixin):
     def dispatch(self, request, *args, **kwargs):
         if not allowed_to_restore():
             return self.command_response('message', text=RESTORE_BLOCKED_MESSAGE)
+        return super().dispatch(request, *args, **kwargs)
+
+
+class BackupAllowedMixin(SuperUserMixin):
+    """Server-side enforcement of restore_only, the same way RestoreAllowedMixin enforces
+    BACKUP_ALLOW_RESTORE. Backup.check_writable() is still the backstop, but a modal that
+    opens and then fails its task is a worse answer than one that says why.
+
+    split_slug() runs in BaseModalMixin.dispatch, which is further down the MRO than this,
+    so the config index is read from the raw slug rather than self.slug."""
+
+    def dispatch(self, request, *args, **kwargs):
+        # anyone else falls through to the permission check rather than being told
+        # anything about the destination
+        if request.user.is_superuser:
+            slug = (kwargs.get('slug') or '').split('-')
+            config_values = [slug[k + 1] for k in range(0, len(slug) - 1, 2) if slug[k] == 'config']
+            config = safe_config(config_at(config_values[0] if config_values else None))
+            if config is not None and config.restore_only:
+                return self.command_response('message', text=BACKUP_BLOCKED_MESSAGE)
         return super().dispatch(request, *args, **kwargs)
 
 
@@ -44,7 +64,7 @@ class ConfirmRestoreModal(RestoreAllowedMixin, Modal):
         return 'This will overwrite the current database and data could be lost.'
 
 
-class ConfirmBackupModal(SuperUserMixin, Modal):
+class ConfirmBackupModal(BackupAllowedMixin, Modal):
 
     modal_title = 'Warning'
 
@@ -74,6 +94,10 @@ class RestoreTaskModal(RestoreAllowedMixin, SuperUserTaskModal):
     pass
 
 
+class BackupTaskModal(BackupAllowedMixin, SuperUserTaskModal):
+    pass
+
+
 class AdminTaskModal(PermissionRequiredMixin, TaskModal):
     """Read-only tasks (e.g. verify) need the same access as the backup pages,
     not superuser."""
@@ -81,7 +105,7 @@ class AdminTaskModal(PermissionRequiredMixin, TaskModal):
     refresh_ms = 500
 
 
-class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
+class ConfirmEmptyTrashModal(BackupAllowedMixin, Modal):
 
     modal_title = 'Warning'
 
@@ -89,7 +113,7 @@ class ConfirmEmptyTrashModal(SuperUserMixin, Modal):
         return 'Are you sure you want to permanently remove deleted items?'
 
     def button_empty_trash(self, **_kwargs):
-        Backup(config=config_at(self.slug.get('config'))).storage.empty_trash()
+        Backup(config=config_at(self.slug.get('config'))).empty_trash()
         return self.command_response('reload')
 
     def get_modal_buttons(self):

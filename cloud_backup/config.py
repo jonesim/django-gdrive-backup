@@ -21,10 +21,18 @@ offsite store plus an unencrypted database copy for a staging server:
 Config keys: storage (BACKUP_STORAGE-style dict), encryption (True = derive from the
 encrypted-credentials SETTINGS_KEY, or a urlsafe-base64 32-byte key string), db
 (include the database, default True), db_dir, dirs, s3_dirs, retention,
-changed_files, db_tiers. A key absent from a named config inherits the corresponding legacy
-global setting (BACKUP_STORAGE, BACKUP_ENCRYPTION, BACKUP_DIRS, ...), which is also
-how installations without BACKUP_CONFIGS keep working unchanged - their globals
-simply become the 'default' config.
+changed_files, db_tiers, restore_only. A key absent from a named config inherits the
+corresponding legacy global setting (BACKUP_STORAGE, BACKUP_ENCRYPTION, BACKUP_DIRS, ...),
+which is also how installations without BACKUP_CONFIGS keep working unchanged - their
+globals simply become the 'default' config.
+
+restore_only marks a destination this installation reads and never writes: another
+machine's backups, e.g. a staging server restoring the live server's dumps out of the
+bucket the live server backs up to. Every write refuses (Backup.check_writable), the web UI
+offers no backup actions for it, and the setup page generates a read-only key. It is a
+config setting rather than a credential because machines commonly share one encrypted
+settings file, so the same credential is present on all of them and only the config can
+tell the roles apart.
 
 The enhanced web UI shows a tab per config and every action works on the selected one -
 it opens on the first config that includes the database, since a files-only destination
@@ -63,6 +71,8 @@ class BackupConfig:
         check_storage_settings(self.storage_settings)
         self.root = self.storage_settings.get('root', getattr(settings, 'BACKUP_ROOT', 'django_backup'))
         self.include_db = config.get('db', True)
+        # read from, never written to - see the module docstring
+        self.restore_only = config.get('restore_only', getattr(settings, 'BACKUP_RESTORE_ONLY', False))
         self.db_dir = config.get('db_dir', getattr(settings, 'BACKUP_DB_DIR', self.root + '/db'))
         self.dirs = config.get('dirs', getattr(settings, 'BACKUP_DIRS', []))
         self.s3_dirs = config.get('s3_dirs', getattr(settings, 'S3_BACKUP_DIRS', []))
@@ -107,7 +117,10 @@ class BackupConfig:
             if self.storage_settings.get('backend', 'gdrive') != 's3':
                 raise ImproperlyConfigured(f"db_tiers for backup config '{name}' needs the 's3' storage "
                                            f'backend')
-            if self.retention:
+            if self.retention and not self.restore_only:
+                # a restore_only config mirrors the writing config's layout so it can find
+                # the dumps, but inherits BACKUP_DB_RETENTION from the globals - and prunes
+                # nothing either way, so the two cannot conflict
                 raise ImproperlyConfigured(
                     f"db_tiers for backup config '{name}' replaces client-side pruning, but retention is set"
                     f"{'' if 'retention' in config else ' (inherited from BACKUP_DB_RETENTION)'} - add "

@@ -11,6 +11,10 @@ missing and generates the commands to fix it, for the web page (enhanced_views
 Nothing here imports a cloud SDK: the module has to work when boto3 is missing, which is
 one of the states it exists to report on.
 
+A restore_only destination is reported on differently throughout: the bucket, its rules and
+its tiers belong to the machine that backs up to it, so this side generates one read-only
+key and says nothing about protection it neither applies nor can fix.
+
 The expiry day counts below are seed values for text the user copies and can edit. They
 are deliberately not settings: the application never applies them - a destination's real
 rules are read back live - so a setting would be a second source of truth that could
@@ -53,9 +57,16 @@ B2_DELETE_CAPABILITY = 'deleteFiles'
 # only when the 'lock' storage setting stamps Object Lock retention on uploads and the
 # extend_retention task tops it up: put_object_retention and reading the retention back
 B2_LOCK_CAPABILITIES = ('readFileRetentions', 'writeFileRetentions')
+# a restore_only config reads another machine's backups and writes nothing, so the key it
+# needs cannot upload, delete or change anything. The two readBucket* capabilities of the
+# full set are dropped with it: they only feed the lifecycle, retention and tier rows,
+# which belong to the config that owns the bucket and are not shown for this one
+B2_READ_ONLY_CAPABILITIES = ('listBuckets', 'listFiles', 'readFiles', 'readBuckets')
 
 
 def key_capabilities(check):
+    if check.get('restore_only'):
+        return list(B2_READ_ONLY_CAPABILITIES)
     capabilities = list(B2_KEY_CAPABILITIES)
     if check['prunes']:
         capabilities.append(B2_DELETE_CAPABILITY)
@@ -173,6 +184,24 @@ def key_name(config_name, bucket):
     return name.strip('-')[:100]
 
 
+def read_only_key_command(check, bucket, shell):
+    """The key for a restore_only destination: it can find and download backups and
+    nothing else."""
+    prefix = common_prefix(check['root'], check['db_dir'])
+    options = f'--bucket {quote_arg(bucket, shell)} '
+    note = ('A read-only key for restoring backups made by another machine. It cannot upload, delete or '
+            'change anything in this bucket, so the destination is no less safe for this installation '
+            'holding it.')
+    if prefix:
+        options += f'--name-prefix {quote_arg(prefix + "/", shell)} '
+        note += f' --name-prefix confines it to {prefix}/, which is where that machine backs up.'
+    else:
+        note += ' No --name-prefix: the backup root and the database folder have no common prefix.'
+    return {'command': f'b2 key create {options}{key_name(check["name"], bucket)} '
+                       f'{",".join(key_capabilities(check))}',
+            'note': note}
+
+
 def b2_setup_commands(check, shell=None):
     """The commands to run, in order, for a Backblaze destination. `check` is the dict
     from check_config(). Every command is text - nothing here is ever executed."""
@@ -182,6 +211,12 @@ def b2_setup_commands(check, shell=None):
                  'note': 'Use an account-level key with the writeBuckets, readBucketEncryption, '
                          'writeBucketEncryption and writeBucketRetentions capabilities. This is NOT the '
                          'key the application should use - that one is created below.'}]
+    if check.get('restore_only'):
+        # the bucket belongs to the machine that backs up to it: nothing here creates it,
+        # and a lifecycle rule set from this side would replace the owner's
+        commands.append(read_only_key_command(check, bucket, shell))
+        commands.append({'command': 'b2 bucket list', 'note': 'Check the result.'})
+        return commands
     rules = check['wanted_rules'] + check['keep_rules']
     options = (rule_options(rules, shell) + ' ') if rules else ''
     # without --% PowerShell rewrites the quoting of a JSON argument on its way to a
@@ -256,6 +291,9 @@ def b2_setup_commands(check, shell=None):
 def guidance(check):
     """What to do by hand where there are no b2 commands to give."""
     backend = check['backend']
+    if check.get('restore_only'):
+        return [f"{check['destination']} holds backups made by another machine and is only read from here. "
+                f'Give this installation credentials that can list and download, and nothing more.']
     if backend == 'gdrive':
         return [f"Create a folder named {check['root']} in Google Drive and share it with the backup "
                 f'service account, or set BACKUP_TEAM_DRIVE to a shared drive it can already see.',
@@ -363,6 +401,8 @@ def storage_facts(config, storage_settings):
             facts.append((key.replace('_', ' ').title(), str(storage_settings[key])))
     facts.append(('Backup root', config.root))
     facts.append(('Database folder', config.db_dir))
+    if config.restore_only:
+        facts.append(('Restore only', 'yes - nothing is written to this destination'))
     facts.append(('Lifecycle tiers', 'on' if config.db_tiers else 'off'))
     if config.retention:
         facts.append(('Retention', f'{len(config.retention)} rule(s) applied by the application'))
@@ -383,6 +423,7 @@ def check_config(name, shell=None):
              'wanted_rules': [], 'keep_rules': [], 'dropped_rules': [], 'rules_unknown': False,
              'commands': [], 'guidance': [], 'backblaze': False, 'prunes': False, 'object_lock': False,
              'expire_days': None, 'lock_days': {}, 'lock_mode': None, 'app_deletes': False,
+             'restore_only': False,
              'shell': shell if shell in SHELL_LABELS else default_shell()}
     try:
         config = get_config(name)
@@ -395,17 +436,24 @@ def check_config(name, shell=None):
                   'root': config.root,
                   'db_dir': config.db_dir,
                   'backblaze': is_backblaze(storage_settings),
+                  'restore_only': config.restore_only,
                   # what the application itself will do to the destination, which is what
-                  # the key has to be allowed to do
-                  'prunes': bool(config.retention) or (config.db_tiers
-                                                       and config.db_tier_delete == DELETE_APP),
-                  'object_lock': bool(storage_settings.get('lock'))
-                                 or bool(config.db_tiers and any(config.db_tier_lock_days.values())),
-                  'lock_days': dict(config.db_tier_lock_days) if config.db_tiers else {},
-                  'lock_mode': config.db_tier_lock_mode if config.db_tiers else None,
-                  'app_deletes': bool(config.db_tiers and config.db_tier_delete == DELETE_APP),
+                  # the key has to be allowed to do - a restore_only config does none of
+                  # it, whatever its settings inherited
+                  'prunes': not config.restore_only and (bool(config.retention)
+                                                         or (config.db_tiers
+                                                             and config.db_tier_delete == DELETE_APP)),
+                  'object_lock': not config.restore_only
+                                 and (bool(storage_settings.get('lock'))
+                                      or bool(config.db_tiers and any(config.db_tier_lock_days.values()))),
+                  'lock_days': dict(config.db_tier_lock_days) if config.db_tiers and not config.restore_only else {},
+                  'lock_mode': config.db_tier_lock_mode if config.db_tiers and not config.restore_only else None,
+                  'app_deletes': bool(config.db_tiers and config.db_tier_delete == DELETE_APP
+                                      and not config.restore_only),
                   'facts': storage_facts(config, storage_settings)})
-    if config.db_tiers:
+    # the bucket, its lifecycle rules and its tiers belong to the config that writes them;
+    # reporting them again here would double every warning on the machine that only reads
+    if config.db_tiers and not config.restore_only:
         check['expire_days'] = config.db_tier_expire_days
         if config.db_tier_delete == DELETE_LIFECYCLE:
             # with the application deleting there are no rules to create, and a rule would
@@ -423,6 +471,12 @@ def check_config(name, shell=None):
     status = storage.destination_status(root=config.root)
     check['state'] = status['state']
     check['rows'] = [status]
+    if config.restore_only:
+        check['rows'].append({'label': 'Restore only', 'status': 'Enabled',
+                              'detail': 'backups here are made elsewhere - this installation reads them and '
+                                        'writes nothing. How they are protected is reported by the machine '
+                                        'that backs up to this destination'})
+        return finish_check(check)
     try:
         # no per-tier lifecycle rows when the application does the deleting: there are
         # meant to be no rules, so measuring the tiers against them says nothing

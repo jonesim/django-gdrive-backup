@@ -29,7 +29,7 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
                  name='verify_files'),
             path('<str:schema>/', backup_view.as_view(), name='schema_info'),
             path('<str:schema>/tables/', schema_table_view.as_view(), name='schema_tables'),
-            path('modal/backup/<str:slug>/', modals.SuperUserTaskModal.as_view(task=ajax_backup),
+            path('modal/backup/<str:slug>/', modals.BackupTaskModal.as_view(task=ajax_backup),
                  name='django_backup'),
             path('modal/confim_restore/<str:base64>/', modals.ConfirmRestoreModal.as_view(),
                  name='confirm_restore_db'),

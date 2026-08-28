@@ -1,8 +1,8 @@
 import datetime
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
-from cloud_backup.backup import Backup
+from cloud_backup.backup import Backup, RestoreOnlyConfig
 
 
 class Logger:
@@ -78,6 +78,15 @@ class Command(BaseCommand):
                             help='Which BACKUP_CONFIGS entry to use (default: the default config)')
 
     def handle(self, *args, **options):
+        try:
+            self.backup(**options)
+        except RestoreOnlyConfig as e:
+            # asking a restore_only config to back up is a mistake in the command line, not
+            # a failed backup - say so without a traceback
+            raise CommandError(str(e))
+
+    @staticmethod
+    def backup(**options):
         if options['extend_retention']:
             Backup(logger=Logger(), config=options['config']).extend_file_retention()
             return
