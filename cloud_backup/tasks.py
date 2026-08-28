@@ -5,7 +5,6 @@ from celery import shared_task
 from django.db import connection
 
 from .backup import Backup
-from .backup_local_files import BackupLocal
 from .config import config_at
 from .utils import allowed_to_restore, RESTORE_BLOCKED_MESSAGE
 
@@ -103,12 +102,11 @@ try:
     @shared_task(bind=True)
     def ajax_verify_files(self, *, slug, **_kwargs):
         backup = Backup(StateLogger(self), config=config_at(slug.get('config')))
-        # the index is into this config's dirs, not the default config's
-        source_dir, dest_name = backup.config.dirs[int(slug['backup_dir'])]
-        local = BackupLocal(backup.storage, backup.config.root, backup.logger, config=backup.config)
-        results = local.verify_folder(source_dir, dest_name)
+        # the index is into this config's file_sources, not the default config's
+        source = backup.config.file_sources[int(slug['backup_dir'])]
+        results = backup.get_file_backup(source.kind).verify_folder(source.source, source.dest_name)
         summary = (f"{results['matched']} matched, {len(results['changed'])} changed, "
-                   f"{len(results['missing'])} missing locally")
+                   f"{len(results['missing'])} missing from the source")
         if results['no_checksum']:
             summary += f", {len(results['no_checksum'])} without a stored checksum"
         problems = results['changed'] + results['missing']

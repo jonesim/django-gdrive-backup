@@ -474,7 +474,8 @@ unencrypted database copy that a staging server restores from:
     }
 
 Config keys: `storage` (a `BACKUP_STORAGE`-style dict), `encryption`, `db` (include
-the database, default True), `db_dir`, `dirs` (as `BACKUP_DIRS`), `s3_dirs` (as
+the database, default True), `db_dir`, `dirs` (as `BACKUP_DIRS`), `azure_dirs` and
+`azure_source` (as `AZURE_BACKUP_DIRS` / `AZURE_BACKUP_SOURCE`), `s3_dirs` (as
 `S3_BACKUP_DIRS`), `retention`, `changed_files`, `db_tiers`, `restore_only` (read this
 destination, never write to it - see *Live, staging and local machines* below).
 **A key absent from a config
@@ -680,21 +681,23 @@ remains possible from the command line.
 
 **Browsing and verifying folder backups**
 
-When `BACKUP_DIRS` (or `S3_BACKUP_DIRS`) is configured, the enhanced management
-page shows a `Backup Files` button that backs up all configured folders without
-touching the database, and a single `Files` button opening a file browser. Its
-root level lists each configured backup directory as a folder; clicking through
-navigates the backed-up tree one level at a time (with breadcrumbs back up), and
-files show their size, backup date and checksum - the plaintext md5 recorded
-with the file at upload time (so it stays comparable when client-side encryption
-is enabled).
+When `BACKUP_DIRS`, `AZURE_BACKUP_DIRS` (or `S3_BACKUP_DIRS`) is configured, the
+enhanced management page shows a `Backup Files` button that backs up all configured
+folders without touching the database, and a single `Files` button opening a file
+browser. Its root level lists each configured backup directory as a folder (a cloud
+icon marks an Azure source); clicking through navigates the backed-up tree one level
+at a time (with breadcrumbs back up), and files show their size, backup date and
+checksum - the plaintext md5 recorded with the file at upload time (so it stays
+comparable when client-side encryption is enabled).
 
 The `Verify` button on each row re-hashes the file on the server's local disk
-and compares it with the stored checksum, reporting:
+(or, for an Azure source, reads the blob's current md5/etag) and compares it with
+what was recorded at backup time, reporting:
 
-- `Match` - the local file is identical to its backup
-- `Changed` - the local file no longer matches its backup
-- `Missing locally` - the local file has been deleted since it was backed up
+- `Match` - the source file is identical to its backup
+- `Changed` - the source file no longer matches its backup
+- `Missing locally` / `Missing from Azure` - the source file has been deleted since
+  it was backed up
 - `No stored checksum` - the backup has no comparable checksum (e.g. a large
   multipart S3 upload made without md5 metadata)
 
@@ -705,15 +708,49 @@ The browser carries the same backup buttons as the management page, so a
 destination that has no database page - a config with `db` off, whose tab opens
 the browser - can still be backed up from the web UI. Its root listing has
 `Backup Files`, and inside one directory there is a `Backup <directory>` button
-that backs up just that entry of `BACKUP_DIRS` (the whole directory, not the
-sub-folder being browsed). The equivalent on the command line is
-`backup_website --folders_only --backup_dir <index>`.
+that backs up just that folder source (the whole directory, not the sub-folder
+being browsed). The equivalent on the command line is
+`backup_website --folders_only --backup_dir <index>`, where the index counts
+`BACKUP_DIRS` entries first and then `AZURE_BACKUP_DIRS`.
 
 The browser and verification are read-only and require the same `access_admin`
 permission as the rest of the management page; the backup buttons, like every
 other backup button, require a superuser. Note that on an S3-compatible
 destination with client-side encryption enabled, listing the checksums costs one
 metadata request per file, so the page can be slow to load for very large trees.
+
+**Configure Azure folder backups**
+
+Media that django-storages keeps in Azure Blob Storage has no local directory for
+`BACKUP_DIRS` to back up. `AZURE_BACKUP_DIRS` names prefixes ("folders") in the
+container instead, and they are backed up through exactly the same pipeline as a local
+directory: the same destination folders (so `media` below appears in the file browser
+just as a local `media` would), client-side encryption, `BACKUP_CHANGED_FILES`
+protection, object lock and per-file verification. Requires
+`pip install django-cloud-backup[azure]`.
+
+settings.py
+
+    # (blob prefix, destination folder). The prefix has no trailing slash and is
+    # relative to the container - include django-storages' `location` if one is set.
+    # '' is the whole container.
+    AZURE_BACKUP_DIRS = [('media', 'media')]
+
+When the project's default file storage is django-storages' `AzureStorage`, its
+container and credentials (the `STORAGES['default']['OPTIONS']` or `AZURE_*`
+settings) are used and nothing else is needed. To back up some other container, or
+when the default storage is not Azure, say which:
+
+    AZURE_BACKUP_SOURCE = {'container': 'media', 'connection_string': connection_string}
+    # or {'container': 'media', 'account_url': 'https://<account>.blob.core.windows.net',
+    #     'credential': account_key_or_sas_token}
+
+Both are available per config as `azure_dirs` / `azure_source`. Nothing is downloaded
+to decide what needs backing up: a blob is skipped when its md5 (which Azure records
+for single-request uploads - django-storages' normal case) or otherwise its etag
+matches what was stored with the backup, so an unchanged blob costs one listing entry
+and a changed one is re-uploaded. The `backup_azure_s3.BackupAzureToS3` class is
+different: a standalone rclone-compatible mirror that bypasses this pipeline.
 
 **Configure S3 folder backups**
 

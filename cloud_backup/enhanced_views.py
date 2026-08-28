@@ -28,8 +28,9 @@ from openpyxl import Workbook
 from cloud_backup.backup import Backup
 from . import storage_setup
 from .backup_local_files import BackupLocal, local_backup_path
-from .config import config_index, config_names, safe_config, selected_config_name
+from .config import FileSource, config_index, config_names, safe_config, selected_config_name
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
+from .storages.base import StorageFileNotFound
 from .tasks import ajax_backup
 from .utils import allowed_to_restore, BACKUP_BLOCKED_MESSAGE, RESTORE_BLOCKED_MESSAGE
 
@@ -130,7 +131,7 @@ class BackupConfigMixin:
             return config_url('cloud_backup:storage_setup', config=name)
         if config.include_db:
             return config_url('cloud_backup:backup_info', config=name)
-        if len(config.dirs) == 1:
+        if len(config.file_sources) == 1:
             return config_url('cloud_backup:backup_files', 0, config=name)
         return config_url('cloud_backup:backup_files_root', config=name)
 
@@ -282,7 +283,7 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                 (f'cloud_backup:confirm_backup,{config_slug}-all_schemas-True', 'Backup All Schemas',
                  {'visible': config.include_db and writable and len(self.schemas) > 1}),
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
-                 {'visible': writable and bool(config.dirs or config.s3_dirs)}),
+                 {'visible': writable and bool(config.file_sources or config.s3_dirs)}),
                 self.page_item('cloud_backup:schema_info', f'View {self.schemas[0][0]}', self.schemas[0][0],
                                visible=config.include_db and len(self.schemas) == 1),
                 (f'cloud_backup:confirm_empty_trash,{config_slug}', 'Empty Trash',
@@ -290,9 +291,9 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                 # with a single backup dir the root listing is a pointless extra
                 # click, so link straight into it
                 self.page_item('cloud_backup:backup_files', 'Files', 0,
-                               visible=len(config.dirs) == 1),
+                               visible=len(config.file_sources) == 1),
                 self.page_item('cloud_backup:backup_files_root', 'Files',
-                               visible=len(config.dirs) > 1),
+                               visible=len(config.file_sources) > 1),
             )
 
     # noinspection PyAttributeOutsideInit
@@ -490,10 +491,11 @@ class SchemaTableView(SchemaTableBaseView):
 
 
 class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, MenuMixin, DatatableView):
-    """File browser over the BACKUP_DIRS folder backups. The root level (no backup_dir)
-    lists each configured backup directory as a folder; inside one, sub-folders are
-    clickable rows and files carry per-file checksum verification against the local
-    source files."""
+    """File browser over the folder backups - BACKUP_DIRS local directories and
+    AZURE_BACKUP_DIRS blob prefixes, indexed together as config.file_sources. The root
+    level (no backup_dir) lists each configured source as a folder; inside one,
+    sub-folders are clickable rows and files carry per-file checksum verification
+    against the source they were backed up from."""
 
     permission_required = 'access_admin'
 
@@ -505,18 +507,22 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
         if response:
             return response
         if backup_dir is not None:
-            if not 0 <= backup_dir < len(self.backup.config.dirs):
+            sources = self.backup.config.file_sources
+            if not 0 <= backup_dir < len(sources):
                 raise Http404('No such backup directory')
-            self.source_dir, self.dest_name = self.backup.config.dirs[self.backup_dir]
+            self.file_source = sources[backup_dir]
+            self.source_dir, self.dest_name = self.file_source.source, self.file_source.dest_name
         return super().dispatch(request, *args, **kwargs)
+
+    @cached_property
+    def file_backup(self):
+        return self.backup.get_file_backup(self.file_source.kind)
 
     @cached_property
     def dest_folder(self):
         # resolve the destination exactly as backup_folder does, but with get_folder
         # so browsing never creates folders
-        local = BackupLocal(self.backup.storage, self.backup.config.root, self.backup.logger,
-                            config=self.backup.config)
-        folder = self.backup.storage.get_folder(self.dest_name, parent=local.base_backup_dir)
+        folder = self.backup.storage.get_folder(self.dest_name, parent=self.file_backup.base_backup_dir)
         for segment in self.sub_path.split('/') if self.sub_path else []:
             if folder is None:
                 return None
@@ -543,7 +549,7 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
         if self.backup_dir is None:
             self.menus['buttons'].add_items(
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
-                 {'visible': writable and bool(config.dirs or config.s3_dirs)}),
+                 {'visible': writable and bool(config.file_sources or config.s3_dirs)}),
             )
         else:
             self.menus['buttons'].add_items(
@@ -554,7 +560,7 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
                  {'visible': writable}),
                 # nothing more than the button above would do on a single-folder config
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
-                 {'visible': writable and (len(config.dirs) > 1 or bool(config.s3_dirs))}),
+                 {'visible': writable and (len(config.file_sources) > 1 or bool(config.s3_dirs))}),
                 (f'cloud_backup:verify_files,{config_slug}-backup_dir-{self.backup_dir}',
                  'Verify All Files'),
             )
@@ -573,16 +579,18 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
         table.table_options['stateSave'] = False
 
     @staticmethod
-    def folder_row(row_id, name, url):
+    def folder_row(row_id, name, url, icon='fas fa-folder'):
         return {'id': row_id, 'path': '',
-                'name': f'<a href="{url}"><i class="fas fa-folder"></i> {escape(name)}</a>',
+                'name': f'<a href="{url}"><i class="{icon}"></i> {escape(name)}</a>',
                 'size': '', 'created': None, 'checksum': '', 'encrypted': '', 'verify': ''}
 
     def get_table_query(self, table, **kwargs):
         if self.backup_dir is None:
-            return [self.folder_row(f'dir{index}', dest_name,
-                                    config_url('cloud_backup:backup_files', index, config=self.url_config))
-                    for index, (_source_dir, dest_name) in enumerate(self.backup.config.dirs)]
+            # a cloud icon marks the sources that are Azure prefixes rather than local directories
+            return [self.folder_row(f'dir{index}', source.dest_name,
+                                    config_url('cloud_backup:backup_files', index, config=self.url_config),
+                                    icon='fas fa-cloud' if source.kind == FileSource.AZURE else 'fas fa-folder')
+                    for index, source in enumerate(self.backup.config.file_sources)]
         if self.dest_folder is None:
             return []
         rows = []
@@ -614,18 +622,36 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
                          'verify': verify_button})
         return rows
 
+    BADGES = {'match': '<span class="badge badge-success"><i class="fas fa-check"></i> Match</span>',
+              'changed': '<span class="badge badge-danger">Changed</span>',
+              'missing': '<span class="badge badge-warning">Missing locally</span>',
+              'missing_source': '<span class="badge badge-warning">Missing from Azure</span>',
+              'no_checksum': '<span class="badge badge-secondary">No stored checksum</span>'}
+
+    def verify_status(self, rel_path, checksum):
+        """'match' / 'changed' / 'missing' / 'no_checksum' for one stored file against
+        its source - the local file re-hashed, or the blob's current fingerprint"""
+        if self.file_source.kind == FileSource.AZURE:
+            # the stored file's metadata (source md5/etag) is fetched again rather than
+            # carried in the row: the checksum column can be the backend's hash instead
+            try:
+                stored_file = self.backup.storage.find_file(self.dest_folder, rel_path.rsplit('/', 1)[-1])
+            except StorageFileNotFound:
+                stored_file = {}  # deleted since the page was listed: compares as no_checksum
+            blob = self.file_backup.get_blob(self.source_dir, rel_path)
+            status = self.file_backup.compare(stored_file, blob)
+            return 'missing_source' if status == 'missing' else status
+        local_path = local_backup_path(self.source_dir, rel_path)
+        if local_path is None or not os.path.isfile(local_path):
+            return 'missing'
+        if not checksum:
+            return 'no_checksum'
+        return 'match' if BackupLocal.md5sum(local_path) == checksum else 'changed'
+
     def row_verify(self, row_no, row_data, **_kwargs):
         row = json.loads(row_data)
         rel_path, checksum = row[1], row[5]
-        local_path = local_backup_path(self.source_dir, rel_path)
-        if local_path is None or not os.path.isfile(local_path):
-            badge = '<span class="badge badge-warning">Missing locally</span>'
-        elif not checksum:
-            badge = '<span class="badge badge-secondary">No stored checksum</span>'
-        elif BackupLocal.md5sum(local_path) == checksum:
-            badge = '<span class="badge badge-success"><i class="fas fa-check"></i> Match</span>'
-        else:
-            badge = '<span class="badge badge-danger">Changed</span>'
+        badge = self.BADGES[self.verify_status(rel_path, checksum)]
         self.setup_tables()
         self.add_command(overwrite_visible_cell(self.tables['files'], row_no, 'verify', badge))
         return self.command_response()
@@ -636,17 +662,19 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
 
     def ajax_read_storage_info(self, **_kwargs):
         if self.backup_dir is None:
-            html = f'{len(self.backup.config.dirs)} backup folder(s) configured'
+            html = f'{len(self.backup.config.file_sources)} backup folder(s) configured'
         elif self.dest_folder is None:
-            html = f'No backups found yet for {self.source_dir}'
+            html = f'No backups found yet for {escape(self.file_backup.describe(self.source_dir))}'
         else:
             info = self.backup.storage.storage_info(self.dest_folder)
             if info['web_link']:
                 location = '<a target="_blank" href="{}">{}</a>'.format(info['web_link'], info['name'])
             else:
                 location = info['name']
-            source = self.source_dir if not self.sub_path else f'{self.source_dir}/{self.sub_path}'
-            html = f'Backup Folder {location} &mdash; backed up from {source}'
+            source = self.file_backup.describe(self.source_dir)
+            if self.sub_path:
+                source = f'{source}/{self.sub_path}'
+            html = f'Backup Folder {location} &mdash; backed up from {escape(source)}'
         return self.command_response('html', selector='#storage_info', html=html)
 
 

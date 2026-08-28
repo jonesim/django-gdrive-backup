@@ -2,9 +2,10 @@ import logging
 from tempfile import gettempdir
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from .backup_db import BackupDb
 from .backup_local_files import BackupLocal
-from .config import BackupConfig, CHANGED_PROTECT, get_config
+from .config import BackupConfig, CHANGED_PROTECT, FileSource, get_config
 from .db_tiers import DEFAULT_CATCHUP_DAYS, DELETE_APP, DbTierPromoter, TIER_DIRS
 from .sql_functions import get_schemas
 from .storages import get_storage
@@ -14,6 +15,12 @@ try:
 except ImportError:
     # Allow for not using S3 and not installing boto3
     BackupS3 = None
+
+try:
+    from .backup_azure import BackupAzure
+except ImportError:
+    # likewise azure-storage-blob, only needed for azure_dirs (or an azure destination)
+    BackupAzure = None
 
 
 class ChangedFilesError(Exception):
@@ -70,15 +77,30 @@ class Backup:
                         exclude_table_data=getattr(settings, 'BACKUP_EXCLUDE_TABLE_DATA', None),
                         config=self.config)
 
+    def get_file_backup(self, kind=FileSource.LOCAL):
+        """The folder backup for a FileSource kind - BackupLocal for a directory,
+        BackupAzure for a prefix of the config's azure_source container. Both take
+        (source, dest_name) in backup_folder / verify_folder, so callers loop over
+        config.file_sources without caring which."""
+        if kind == FileSource.AZURE:
+            if BackupAzure is None:
+                raise ImproperlyConfigured('azure_dirs needs the azure-storage-blob package: '
+                                           'pip install django-cloud-backup[azure]')
+            return BackupAzure(self.config.azure_source, self.storage, self.config.root, self.logger,
+                               config=self.config)
+        return BackupLocal(self.storage, self.config.root, self.logger, config=self.config)
+
     def backup_db_and_folders(self, schema=None, table=None, include_db=True, all_schemas=False,
                               include_folders=True, include_s3_folders=True, sub_folder=None,
                               backup_dir=None):
-        """:param backup_dir: index into config.dirs, to back up one configured folder
-        rather than all of them - the same index the file browser urls use
+        """:param backup_dir: index into config.file_sources, to back up one configured
+        folder (local directory or Azure prefix) rather than all of them - the same index
+        the file browser urls use
         """
         self.check_writable()
         changed_files = []
-        if backup_dir is not None and not 0 <= backup_dir < len(self.config.dirs):
+        sources = self.config.file_sources
+        if backup_dir is not None and not 0 <= backup_dir < len(sources):
             # checked up front so an index into a config with no dirs at all is an
             # error rather than a run that silently backs nothing up
             raise IndexError(f'No backup directory {backup_dir} in config {self.config.name!r}')
@@ -96,14 +118,18 @@ class Backup:
                 # a run that just uploaded a dump can promote yesterday's
                 self.promote_db_tiers(resume=True, warn_empty=False)
 
-        if include_folders and self.config.dirs:
-            dirs = self.config.dirs if backup_dir is None else [self.config.dirs[backup_dir]]
-            b = BackupLocal(self.storage, self.config.root, self.logger, config=self.config)
-            for backup in dirs:
-                b.backup_folder(*backup)
-            changed_files += b.changed_files
+        if include_folders and sources:
+            if backup_dir is not None:
+                sources = [sources[backup_dir]]
+            backups = {}
+            for source in sources:
+                if source.kind not in backups:
+                    backups[source.kind] = self.get_file_backup(source.kind)
+                backups[source.kind].backup_folder(source.source, source.dest_name)
+            for b in backups.values():
+                changed_files += b.changed_files
 
-        # backup_dir names a local folder, so an S3 source can never be what was asked for
+        # backup_dir names a folder source, so an S3 source can never be what was asked for
         if include_s3_folders and self.config.s3_dirs and backup_dir is None:
             s3_backup = BackupS3(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY,
                                  self.storage,

@@ -44,12 +44,13 @@ class Command(BaseCommand):
 
         parser.add_argument('--folders_only',
                             action='store_true',
-                            default=False)
+                            default=False,
+                            help='Only the folder backups: BACKUP_DIRS and AZURE_BACKUP_DIRS')
 
         parser.add_argument('--backup_dir',
                             type=int,
-                            help='Back up only this entry of BACKUP_DIRS (its index, as used by the web '
-                                 'file browser) rather than every configured folder')
+                            help='Back up only this folder source (its index in BACKUP_DIRS followed by '
+                                 'AZURE_BACKUP_DIRS, as used by the web file browser) rather than all of them')
 
         parser.add_argument('-sub_folder',
                             type=str)

@@ -27,6 +27,11 @@ class BackupLocal(BaseBackup):
         super().__init__(*args, **kwargs)
         self.changed_files = []
 
+    @staticmethod
+    def describe(source_dir):
+        """How the UI names the source - BackupAzure has the same for a blob prefix"""
+        return source_dir
+
     def backup_folder(self, source_dir, backup_dir):
         self.logger.info(f'Backing up {source_dir} to {backup_dir}')
         mode = self.config.changed_files

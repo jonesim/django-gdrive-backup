@@ -183,6 +183,11 @@ BACKUP_ALLOW_RESTORE = True
 # media/ at the repo root is mounted at /media by docker-compose; its test/
 # sub-folder exercises the file browser's folder navigation
 BACKUP_DIRS = [(MEDIA_ROOT, 'media')]
+# Media kept in Azure Blob Storage instead (django-storages AzureStorage as the default
+# storage): back up the container's media/ prefix through the same pipeline, into the
+# same 'media' folder. The container and credentials come from the STORAGES / AZURE_*
+# settings, or set AZURE_BACKUP_SOURCE = {'container': ..., 'connection_string': ...}
+# AZURE_BACKUP_DIRS = [('media', 'media')]
 BACKUP_DB_RETENTION = [{'hours': 1, 'number': 4},
                        {'hours': 2, 'number': 10},
                        {'days': 1, 'number': 10},

@@ -20,11 +20,20 @@ offsite store plus an unencrypted database copy for a staging server:
 
 Config keys: storage (BACKUP_STORAGE-style dict), encryption (True = derive from the
 encrypted-credentials SETTINGS_KEY, or a urlsafe-base64 32-byte key string), db
-(include the database, default True), db_dir, dirs, s3_dirs, retention,
-changed_files, db_tiers, restore_only. A key absent from a named config inherits the
-corresponding legacy global setting (BACKUP_STORAGE, BACKUP_ENCRYPTION, BACKUP_DIRS, ...),
-which is also how installations without BACKUP_CONFIGS keep working unchanged - their
-globals simply become the 'default' config.
+(include the database, default True), db_dir, dirs, azure_dirs, azure_source, s3_dirs,
+retention, changed_files, db_tiers, restore_only. A key absent from a named config
+inherits the corresponding legacy global setting (BACKUP_STORAGE, BACKUP_ENCRYPTION,
+BACKUP_DIRS, ...), which is also how installations without BACKUP_CONFIGS keep working
+unchanged - their globals simply become the 'default' config.
+
+dirs and azure_dirs are the folder backups - local directories and prefixes of an Azure
+container (media that django-storages keeps in Azure has no local directory to back
+up). Together they are BackupConfig.file_sources, which the file browser, the
+Backup <folder> button and backup_website --backup_dir index into: local entries first,
+so an installation with only BACKUP_DIRS keeps its indices. azure_source (container plus
+connection_string, or account_url and credential - the azure destination backend's keys)
+says which container; when it is not set the project's own django-storages Azure
+settings are used, so media in Azure needs nothing more than AZURE_BACKUP_DIRS.
 
 restore_only marks a destination this installation reads and never writes: another
 machine's backups, e.g. a staging server restoring the live server's dumps out of the
@@ -58,6 +67,52 @@ CHANGED_PROTECT = 'protect'
 CHANGED_HISTORY = 'history'
 
 
+class FileSource:
+    """One folder backup: where it comes from and the destination folder it is stored in.
+    kind is LOCAL (source is a directory path) or AZURE (source is a blob prefix in the
+    config's azure_source container, '' for the whole container)."""
+
+    LOCAL = 'local'
+    AZURE = 'azure'
+
+    def __init__(self, kind, source, dest_name):
+        self.kind = kind
+        self.source = source
+        self.dest_name = dest_name
+
+    def __repr__(self):
+        return f'FileSource({self.kind!r}, {self.source!r}, {self.dest_name!r})'
+
+
+def default_azure_source():
+    """The Azure container the project's default file storage lives in, read from the
+    django-storages settings (STORAGES['default'] OPTIONS, falling back to the AZURE_*
+    settings as django-storages itself does), or None when the default storage is not
+    Azure. Lets media stored through django-storages be backed up with just
+    AZURE_BACKUP_DIRS - the credentials are already in the settings."""
+    default = (getattr(settings, 'STORAGES', None) or {}).get('default') or {}
+    backend = default.get('BACKEND') or getattr(settings, 'DEFAULT_FILE_STORAGE', '') or ''
+    if 'azure' not in backend.lower():
+        return None
+    options = default.get('OPTIONS') or {}
+
+    def option(name):
+        return options.get(name, getattr(settings, 'AZURE_' + name.upper(), None))
+
+    container = option('azure_container') or getattr(settings, 'AZURE_CONTAINER', None)
+    if not container:
+        return None
+    if option('connection_string'):
+        return {'container': container, 'connection_string': option('connection_string')}
+    account_name = option('account_name')
+    if not account_name:
+        return None
+    suffix = option('endpoint_suffix') or 'core.windows.net'
+    credential = option('sas_token') or option('account_key') or option('token_credential')
+    return {'container': container, 'account_url': f'https://{account_name}.blob.{suffix}',
+            'credential': credential}
+
+
 class BackupConfig:
     """Resolved settings for one backup destination. Every value falls back to the
     legacy global setting so BackupConfig() alone reproduces pre-BACKUP_CONFIGS
@@ -75,6 +130,16 @@ class BackupConfig:
         self.restore_only = config.get('restore_only', getattr(settings, 'BACKUP_RESTORE_ONLY', False))
         self.db_dir = config.get('db_dir', getattr(settings, 'BACKUP_DB_DIR', self.root + '/db'))
         self.dirs = config.get('dirs', getattr(settings, 'BACKUP_DIRS', []))
+        # (blob prefix, destination folder) pairs in the azure_source container
+        self.azure_dirs = config.get('azure_dirs', getattr(settings, 'AZURE_BACKUP_DIRS', []))
+        self.azure_source = config.get('azure_source', getattr(settings, 'AZURE_BACKUP_SOURCE', None))
+        if self.azure_dirs and not self.azure_source:
+            self.azure_source = default_azure_source()
+            if not self.azure_source:
+                raise ImproperlyConfigured(
+                    f"azure_dirs for backup config '{name}' but no azure_source: set AZURE_BACKUP_SOURCE "
+                    f"(or the config's azure_source) to {{'container': ..., 'connection_string': ...}} "
+                    f'- it is only implied when the default file storage is django-storages Azure')
         self.s3_dirs = config.get('s3_dirs', getattr(settings, 'S3_BACKUP_DIRS', []))
         self.retention = config.get('retention', getattr(settings, 'BACKUP_DB_RETENTION', None))
         db_tiers = config.get('db_tiers', getattr(settings, 'BACKUP_DB_TIERS', False))
@@ -133,6 +198,13 @@ class BackupConfig:
         if self.changed_files not in (CHANGED_OVERWRITE, CHANGED_PROTECT, CHANGED_HISTORY):
             raise ImproperlyConfigured(f"changed_files for backup config '{name}' must be one of "
                                        f'{CHANGED_OVERWRITE!r}, {CHANGED_PROTECT!r}, {CHANGED_HISTORY!r}')
+
+    @property
+    def file_sources(self):
+        """Every folder backup as a FileSource, local directories first - the list that
+        backup_dir indices refer to, so adding azure_dirs renumbers nothing."""
+        return ([FileSource(FileSource.LOCAL, source, dest_name) for source, dest_name in self.dirs] +
+                [FileSource(FileSource.AZURE, prefix, dest_name) for prefix, dest_name in self.azure_dirs])
 
 
 def config_names():
