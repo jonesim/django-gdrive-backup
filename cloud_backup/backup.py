@@ -4,6 +4,8 @@ from tempfile import gettempdir
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from .backup_db import BackupDb
+from .models import BackupRun
+from .runs import record_run
 from .backup_local_files import BackupLocal
 from .config import BackupConfig, CHANGED_PROTECT, FileSource, get_config
 from .db_tiers import DEFAULT_CATCHUP_DAYS, DELETE_APP, DbTierPromoter, TIER_DIRS
@@ -98,6 +100,14 @@ class Backup:
         the file browser urls use
         """
         self.check_writable()
+        with record_run(self.config.name, BackupRun.BACKUP, self.logger) as detail:
+            detail.update({k: v for k, v in dict(schema=schema, table=table, all_schemas=all_schemas,
+                                                 sub_folder=sub_folder, backup_dir=backup_dir).items() if v})
+            self._backup_db_and_folders(detail, schema, table, include_db, all_schemas, include_folders,
+                                        include_s3_folders, sub_folder, backup_dir)
+
+    def _backup_db_and_folders(self, detail, schema, table, include_db, all_schemas, include_folders,
+                               include_s3_folders, sub_folder, backup_dir):
         changed_files = []
         sources = self.config.file_sources
         if backup_dir is not None and not 0 <= backup_dir < len(sources):
@@ -111,12 +121,13 @@ class Backup:
                 db.backup_db_to_storage()
                 if not sub_folder and self.config.retention:
                     db.prune_old_backups(self.config.retention)
+            detail['db'] = len(schemas)
             if not sub_folder and self.config.db_tiers:
                 # promote here as well as on a schedule: the hourly tier expires by
                 # itself, so a promotion job that silently stops running loses every
                 # backup once the lifecycle rule catches up. Whatever else is broken,
                 # a run that just uploaded a dump can promote yesterday's
-                self.promote_db_tiers(resume=True, warn_empty=False)
+                detail['promoted'] = self.promote_db_tiers(resume=True, warn_empty=False, record=False)
 
         if include_folders and sources:
             if backup_dir is not None:
@@ -128,6 +139,7 @@ class Backup:
                 backups[source.kind].backup_folder(source.source, source.dest_name)
             for b in backups.values():
                 changed_files += b.changed_files
+            detail['folders'] = len(sources)
 
         # backup_dir names a folder source, so an S3 source can never be what was asked for
         if include_s3_folders and self.config.s3_dirs and backup_dir is None:
@@ -141,6 +153,7 @@ class Backup:
             changed_files += s3_backup.changed_files
 
         if changed_files:
+            detail['changed_files'] = len(changed_files)
             summary = ', '.join(changed_files[:5]) + ('...' if len(changed_files) > 5 else '')
             self.logger.warning(f'{len(changed_files)} source files changed since being backed up: {summary}')
             if self.config.changed_files == CHANGED_PROTECT:
@@ -149,15 +162,25 @@ class Backup:
                 raise ChangedFilesError(f'{len(changed_files)} source files changed since being backed up '
                                         f'and were NOT backed up: {summary}')
 
-    def promote_db_tiers(self, as_of=None, days=None, resume=False, warn_empty=True):
+    def promote_db_tiers(self, as_of=None, days=None, resume=False, warn_empty=True, record=True):
         """Promote database dumps from the hourly tier into daily and monthly with
         server-side copies, so the bucket's lifecycle rules can keep them for different
         lengths of time. Needs no database, and runs at the end of every db backup as
         well as from the scheduled task - see backup_db_and_folders.
 
         :param resume: cheap mode for the in-backup call - see DbTierPromoter.promote
+        :param record: write a BackupRun row; the in-backup call is part of the backup's
+                       own row instead
         """
         self.check_writable()
+        if record:
+            with record_run(self.config.name, BackupRun.PROMOTE, self.logger) as detail:
+                stats = self._promote_db_tiers(as_of, days, resume, warn_empty)
+                detail.update(stats or {})
+            return stats
+        return self._promote_db_tiers(as_of, days, resume, warn_empty)
+
+    def _promote_db_tiers(self, as_of, days, resume, warn_empty):
         if not self.config.db_tiers:
             self.logger.info('db_tiers is not enabled for this config - nothing to promote')
             return
@@ -197,6 +220,13 @@ class Backup:
         min_days of object-lock retention. Costs 1-2 API calls per file - schedule
         daily rather than running with every backup."""
         self.check_writable()
+        with record_run(self.config.name, BackupRun.EXTEND_RETENTION, self.logger) as detail:
+            stats = self._extend_file_retention(workers)
+            if isinstance(stats, dict):
+                detail.update(stats)
+        return stats
+
+    def _extend_file_retention(self, workers):
         min_days = self.storage.lock.get('min_days')
         if not min_days:
             self.logger.info('No object-lock min_days configured - nothing to extend')
