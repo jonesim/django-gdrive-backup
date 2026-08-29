@@ -9,7 +9,7 @@ import requests
 from .base_backup import BaseBackup
 from .compression import decompress
 from .db_tiers import (DAILY, DB_FILE_EXTENSIONS, DELETE_APP, DUMP_EXTENSION, HOURLY,  # noqa: F401 re-export
-                       LEGACY_STAMP, MONTHLY, TIER_DIRS, backup_time, hourly_dir, hourly_name, tier_of,
+                       LEGACY_STAMP, MONTHLY, TIER_DIRS, backup_time, hourly_dir, hourly_name, list_tier, tier_of,
                        tier_prefixes)
 from .encryption import decrypt_in_place, encrypt_file
 from .prune_backups import PruneBackups
@@ -152,8 +152,9 @@ class BackupDb(BaseBackup):
     def get_tiered_backup_files(self, metadata_filter=None):
         files = []
         for tier in (DAILY, MONTHLY):
-            files += self.storage.list_files(self.storage.ensure_folder(tier, parent=self.base_backup_dir),
-                                             metadata_filter=metadata_filter, include_metadata=True)
+            # a sub-folder per server, plus any copies at the root from before that
+            files += [f for _server, f in list_tier(self.storage, self.base_backup_dir, tier, include_metadata=True)
+                      if self.storage.matches_metadata(f, metadata_filter)]
         if self.config.db_tier_hourly_days:
             # listing the day folders in the window is cheaper than walking the whole
             # hourly tier, which would read metadata for days nobody is going to see

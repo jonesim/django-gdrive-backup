@@ -190,6 +190,14 @@ class FakeStorage:
                 for key, size in self.objects.items()
                 if key.startswith(prefix) and '/' not in key[len(prefix):]]
 
+    def walk(self, folder, include_metadata=False):
+        prefix = folder['id'] + '/'
+        for key, size in self.objects.items():
+            if key.startswith(prefix):
+                relative = key[len(prefix):]
+                yield (relative.rsplit('/', 1)[0] if '/' in relative else '',
+                       {'id': key, 'name': key.rsplit('/', 1)[-1], 'size': size, 'created': None, 'metadata': {}})
+
     def destination_status(self, root=None):
         return {'state': 'ok', 'detail': 'bucket is accessible'}
 
@@ -201,7 +209,7 @@ HEALTHY_BUCKET = {
     'django_backup/db/hourly/2026/08/27/db_2026_08_27_23_50_03.dump': 1_000_000,
     'django_backup/db/hourly/2026/08/28/db_2026_08_28_07_50_02.dump': 1_010_000,
     'django_backup/db/hourly/2026/08/28/db_2026_08_28_09_50_04.dump': 1_020_000,
-    'django_backup/db/daily/db_2026-08-27.dump': 1_000_000,
+    'django_backup/db/daily/20_117_165_6/db_2026-08-27.dump': 1_000_000,
     'django_backup/db/monthly/db_2026-07.dump': 900_000,
 }
 

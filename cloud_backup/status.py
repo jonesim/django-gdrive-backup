@@ -26,7 +26,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from .config import DEFAULT_CONFIG, config_names, get_config
-from .db_tiers import DAILY, MONTHLY, TIER_DIRS, hourly_dir, parse_daily, parse_dump
+from .db_tiers import DAILY, MONTHLY, TIER_DIRS, hourly_dir, list_tier, parse_daily, parse_dump
 from .models import BackupRun
 from .runs import history_days, latest_run
 
@@ -217,12 +217,11 @@ def newest_dumps(backup, today):
 
 
 def promoted_copies(backup, tier):
-    """Every copy in the daily or monthly tier as (period, size, key), oldest first - a
-    date for daily, the first of the month for monthly."""
+    """Every copy in the daily or monthly tier, from every server, as (period, size, key),
+    oldest first - a date for daily, the first of the month for monthly."""
     storage = backup.storage
-    folder = storage.ensure_folder(tier, parent=storage.ensure_folder(backup.config.db_dir))
     found = []
-    for f in storage.list_files(folder):
+    for _server, f in list_tier(storage, storage.ensure_folder(backup.config.db_dir), tier):
         parsed = parse_daily(f['name'])
         if parsed:
             found.append((parsed[1], f['size'], f['id']))

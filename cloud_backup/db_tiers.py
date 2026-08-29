@@ -7,8 +7,16 @@ lifecycle rules do all the deleting. A scheduled job promotes one dump per day i
 a different lifecycle rule:
 
     hourly/2026/07/30/db_2026_07_30_14_05_37.dump    expire after ~15 days
-    daily/db_2026-07-30.dump                         expire after ~91 days
-    monthly/db_2026-07.dump                          no rule - kept forever
+    daily/20_117_165_6/db_2026-07-30.dump            expire after ~91 days
+    monthly/20_117_165_6/db_2026-07.dump             no rule - kept forever
+
+Promotion is per server: the daily and monthly tiers have a sub-folder per ip_address
+(the metadata every dump is uploaded with) and each server's dumps are promoted on their
+own, so several installations sharing one db folder - a staging server that restores
+from production's dumps, say - each keep their own archive instead of overwriting the one
+daily slot with whichever of them happened to dump last. That is what the flat layout's
+per-ip pruning gave, kept. Copies at the root of daily/ and monthly/ are from before
+promotion was per server; they are left alone and count as that day's copy.
 
 The application never deletes anything, so the backup credential needs no delete
 permission and retention survives a compromised app server. This module owns the layout
@@ -26,6 +34,10 @@ HOURLY = 'hourly'
 DAILY = 'daily'
 MONTHLY = 'monthly'
 TIER_DIRS = (HOURLY, DAILY, MONTHLY)
+
+# sub-folder of daily/ and monthly/ for a dump with no ip_address metadata - only ever
+# something copied in by hand, since every dump this package uploads carries one
+UNKNOWN_SERVER = 'unknown'
 
 # How long each tier is meant to be kept, in days - what the destination's lifecycle rules
 # should say. None means kept indefinitely, which is the default for the monthly archive.
@@ -144,6 +156,22 @@ def month_start(day):
     return day.replace(day=1)
 
 
+def server_of(stored):
+    """The daily/monthly sub-folder a dump promotes into: its ip_address metadata (dots
+    already underscores, as backup_db uploads it), made safe for a key."""
+    ip_address = ((stored.get('metadata') or {}).get('ip_address') or '').strip()
+    return re.sub(r'[^A-Za-z0-9_.-]', '_', ip_address) or UNKNOWN_SERVER
+
+
+def list_tier(storage, db_folder, tier, include_metadata=False):
+    """(server, file) for every copy in the daily or monthly tier of one db folder -
+    server is the sub-folder, '' for a copy at the tier's root from before promotion was
+    per server. The hourly tier is date partitioned instead; see DbTierPromoter.tier_files."""
+    folder = storage.ensure_folder(tier, parent=db_folder)
+    for path, stored in storage.walk(folder, include_metadata=include_metadata):
+        yield path.split('/', 1)[0], stored
+
+
 class DbTierPromoter:
     """Promote database dumps between the lifecycle-managed tiers of one db folder with
     server-side copies. Needs no database connection and never deletes anything.
@@ -175,8 +203,8 @@ class DbTierPromoter:
                            from here, but noise when promotion runs with every backup
         """
         as_of = as_of or datetime.date.today()
-        daily_files = {f['name']: f for f in self.storage.list_files(self.daily_folder)}
-        monthly_names = {f['name'] for f in self.storage.list_files(self.monthly_folder)}
+        daily_files = {(server, f['name']): f for server, f in list_tier(self.storage, self.folder, DAILY)}
+        monthly_names = {(server, f['name']) for server, f in list_tier(self.storage, self.folder, MONTHLY)}
         self.promote_daily(as_of, days, daily_files, resume=resume, warn_empty=warn_empty)
         # always after the daily step: on the first of the month the daily object the
         # monthly copy comes from may have been created seconds ago by that step
@@ -184,7 +212,8 @@ class DbTierPromoter:
         return self.stats
 
     def promote_daily(self, as_of, days, daily_files, resume=False, warn_empty=True):
-        promoted = [parse_daily(name)[1] for name in daily_files if parse_daily(name)]
+        """One copy per server per day: the last dump each server took that day."""
+        promoted = [parse_daily(name)[1] for _server, name in daily_files if parse_daily(name)]
         after = max(promoted) if resume and promoted else None
         # oldest first so a backfill after an outage completes in chronological order
         for offset in range(days, 0, -1):
@@ -193,50 +222,61 @@ class DbTierPromoter:
                 continue
             day_folder = self.storage.ensure_folder(hourly_dir(day), parent=self.folder)
             dumps = {}
-            for f in self.storage.list_files(day_folder):
+            # metadata says which server each dump came from - a day folder is a couple
+            # of dozen objects at most, and resume mode only reads days not yet promoted
+            for f in self.storage.list_files(day_folder, include_metadata=True):
                 parsed = parse_dump(f['name'])
                 if parsed:
-                    dumps.setdefault((parsed[0], parsed[2]), []).append((f['name'], parsed[1], f))
+                    dumps.setdefault((server_of(f), parsed[0], parsed[2]), []).append((f['name'], parsed[1], f))
             if not dumps:
                 self.stats['empty_days'].append(day.isoformat())
                 if warn_empty:
                     self.logger.warning(f'No database dumps to promote for {day} in {self.folder["id"]}')
                 continue
-            for (base, extension), group in sorted(dumps.items()):
+            for (server, base, extension), group in sorted(dumps.items()):
                 name = daily_name(base, day, extension)
-                if name in daily_files:
+                # a root copy is from before promotion was per server: that day is done
+                if (server, name) in daily_files or ('', name) in daily_files:
                     self.stats['skipped'] += 1
                     continue
                 # names are fixed-width timestamps, so lexically newest is the latest dump
                 source_name, taken, source = max(group)
-                copied = self.copy(source, self.daily_folder, name, DAILY, taken)
+                copied = self.copy(source, self.tier_folder(DAILY, server), name, DAILY, taken)
                 if copied:
-                    daily_files[name] = copied
+                    daily_files[(server, name)] = copied
                     self.stats['daily'] += 1
 
     def promote_monthly(self, as_of, daily_files, monthly_names):
+        """One copy per server per month: that server's last daily copy of the month."""
         months = {}
-        for name, f in daily_files.items():
+        for (server, name), f in daily_files.items():
             parsed = parse_daily(name)
             if parsed:
                 base, day, extension = parsed
-                months.setdefault((base, extension, month_start(day)), []).append((day, f))
+                months.setdefault((base, extension, month_start(day), server), []).append((day, f))
         current_month = month_start(as_of)
-        for (base, extension, month), group in sorted(months.items(), key=lambda i: i[0][2]):
+        for (base, extension, month, server), group in sorted(months.items(), key=lambda i: i[0][2]):
             if month >= current_month:
                 continue  # still being written to
             name = monthly_name(base, month, extension)
-            if name in monthly_names:
+            # a month the root archive holds was promoted before copies were per server,
+            # and root daily copies only make a root monthly when the month has nothing
+            # per server - otherwise the switch-over month would be archived twice
+            if (server, name) in monthly_names or ('', name) in monthly_names or (
+                    not server and any(key[:3] == (base, extension, month) and key[3] for key in months)):
                 self.stats['skipped'] += 1
                 continue
             last_day = month.replace(day=calendar.monthrange(month.year, month.month)[1])
             source_day, source = max(group)
             if source_day != last_day:
                 self.logger.warning(f'No dump for {last_day} - promoting {source["id"]} to {name}')
-            copied = self.copy(source, self.monthly_folder, name, MONTHLY)
+            copied = self.copy(source, self.tier_folder(MONTHLY, server), name, MONTHLY)
             if copied:
-                monthly_names.add(name)
+                monthly_names.add((server, name))
                 self.stats['monthly'] += 1
+
+    def tier_folder(self, tier, server):
+        return self.storage.ensure_folder(f'{tier}/{server}' if server else tier, parent=self.folder)
 
     def prune(self, as_of=None, expire_days=None):
         """Delete dumps the tier policy says are past their age, when the application
@@ -266,15 +306,14 @@ class DbTierPromoter:
         return deleted
 
     def tier_files(self, tier):
-        """(file, time it was taken) for everything in one tier. The hourly tier is date
-        partitioned, so its listing is a walk while the others are one listing each."""
-        folder = self.storage.ensure_folder(tier, parent=self.folder)
+        """(file, time it was taken) for everything in one tier - the hourly tier by date
+        folder, the others by server."""
         if tier == HOURLY:
-            for _path, stored in self.storage.walk(folder):
+            for _path, stored in self.storage.walk(self.storage.ensure_folder(tier, parent=self.folder)):
                 parsed = parse_dump(stored['name'])
                 yield stored, parsed[1] if parsed else None
             return
-        for stored in self.storage.list_files(folder):
+        for _server, stored in list_tier(self.storage, self.folder, tier):
             yield stored, backup_time(stored['name'])
 
     def copy(self, source, folder, name, tier, taken=None):

@@ -30,8 +30,7 @@ from django.conf import settings
 
 from .config import get_config
 from .db_tiers import (DAILY, DEFAULT_EXPIRE_DAYS, DEFAULT_PURGE_DAYS, DELETE_APP, DELETE_LIFECYCLE, MONTHLY,
-                       TIER_DIRS,
-                       parse_daily, tier_prefixes)
+                       TIER_DIRS, list_tier, parse_daily, tier_prefixes)
 from .storages import get_storage
 
 # a daily dump appears the day after the hourly ones it comes from, so one day behind is
@@ -408,12 +407,13 @@ def promotion_row(storage, config):
     # in the detail text
     row = {'label': 'Tier promotion', 'folder': f'{base}/{DAILY}/'}
     try:
-        daily = storage.list_files(storage.ensure_folder(f'{base}/{DAILY}'))
-        monthly = storage.list_files(storage.ensure_folder(f'{base}/{MONTHLY}'))
+        db_folder = storage.ensure_folder(base)
+        daily = list(list_tier(storage, db_folder, DAILY))
+        monthly = list(list_tier(storage, db_folder, MONTHLY))
     except Exception as e:  # noqa: BLE001
         return dict(row, status='Unknown', action='warn',
                     detail=f'could not list the daily tier ({type(e).__name__})')
-    days = sorted(parsed[1] for parsed in map(parse_daily, [f['name'] for f in daily]) if parsed)
+    days = sorted(parsed[1] for parsed in map(parse_daily, [f['name'] for _server, f in daily]) if parsed)
     if not days:
         if not monthly:
             return dict(row, status='Unknown', action='warn',
@@ -423,7 +423,9 @@ def promotion_row(storage, config):
                     detail='no dumps in the daily tier - the hourly tier will expire with nothing '
                            'behind it')
     behind = (datetime.date.today() - days[-1]).days
-    detail = f'newest daily dump {days[-1]}, {len(days)} in the daily tier'
+    servers = {server for server, _f in daily if server}
+    detail = f'newest daily dump {days[-1]}, {len(days)} in the daily tier' + (
+        f' from {len(servers)} servers' if len(servers) > 1 else '')
     if behind > STALE_PROMOTION_DAYS:
         return dict(row, status='Disabled', action='fix',
                     detail=detail + f' - {behind} days behind, so nothing recent has been promoted')

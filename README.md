@@ -222,8 +222,16 @@ scheduled job promotes one dump per day into `daily/` and one per month into
 `monthly/` using server-side copies (no download, no re-upload, no egress):
 
     <root>/db/hourly/2026/07/30/db_2026_07_30_14_05_37.dump    expire after ~15 days
-    <root>/db/daily/db_2026-07-30.dump                         expire after ~91 days
-    <root>/db/monthly/db_2026-07.dump                          no rule - kept forever
+    <root>/db/daily/20_117_165_6/db_2026-07-30.dump            expire after ~91 days
+    <root>/db/monthly/20_117_165_6/db_2026-07.dump             no rule - kept forever
+
+The sub-folder is the server the dump came from (the `ip_address` metadata every dump
+carries), and each server is promoted on its own: its last dump of the day becomes its
+daily copy, its last daily copy of the month its monthly one. Several installations can
+share one db folder - a staging server that restores from production's dumps, or a
+developer's machine - and each keeps its own archive rather than whichever of them
+dumped last overwriting the day's single copy. That is the same guarantee the
+`BACKUP_DB_RETENTION` layout gives by pruning per server.
 
 The retention you get is the lifecycle rules you create; this package never writes
 them, so the backup credential needs neither `DeleteObject` nor
@@ -271,8 +279,9 @@ Notes:
 
 - Tiers are created inside each database folder, so a schema backed up separately gets
   `<root>/db/<schema>/hourly/...` and needs its own pair of lifecycle rules.
-- One server per prefix: nothing in the key identifies the server, so a second server
-  backing up to the same place needs its own config or `db_dir`.
+- Copies at the root of `daily/` and `monthly/` are from before promotion was per
+  server. They are left as they are, expire under the same rules, and count as that
+  day's (or month's) copy, so upgrading creates no duplicates.
 - Not compatible with Object Lock (`lock` in `BACKUP_STORAGE`): a retention lock stops
   lifecycle expiry, so locked hourly dumps would accumulate forever. Pick one.
 - Dumps written before tiering was turned on stay listed and restorable where they
