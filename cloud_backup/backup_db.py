@@ -123,8 +123,9 @@ class BackupDb(BaseBackup):
         tier as unprotected - no tier prefixes are passed, the same choice storage_setup
         makes, and protection_rows() adds a Deletion row saying what does the deleting."""
         if not self.config.db_tiers or self.config.db_tier_delete == DELETE_APP:
-            return {'tier_prefixes': None, 'expire_days': None}
-        return {'tier_prefixes': self.tier_prefixes(), 'expire_days': self.config.db_tier_expire_days}
+            return {'tier_prefixes': None, 'expire_days': None, 'purge_days': None}
+        return {'tier_prefixes': self.tier_prefixes(), 'expire_days': self.config.db_tier_expire_days,
+                'purge_days': self.config.db_tier_purge_days}
 
     def protection_rows(self):
         """The backup page's protection table: storage.protection_info plus the rows

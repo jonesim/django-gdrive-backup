@@ -9,7 +9,7 @@ import requests
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 
-from ..db_tiers import DEFAULT_EXPIRE_DAYS
+from ..db_tiers import DEFAULT_EXPIRE_DAYS, DEFAULT_PURGE_DAYS
 from .base import BackupStorage, StorageFileNotFound
 
 
@@ -376,12 +376,15 @@ class S3Storage(BackupStorage):
         matched = [rule for rule in rules if rule['days'] and prefix.startswith(rule['prefix'])]
         return min(matched, key=lambda rule: rule['days']) if matched else None
 
-    def lifecycle_info(self, tier_prefixes=None, versioned=False, expire_days=None):
+    def lifecycle_info(self, tier_prefixes=None, versioned=False, expire_days=None, purge_days=None):
         """:param expire_days: {tier: days the tier should be kept, or None for
         indefinitely} - each tier's real rule is reported against what was asked for.
         Defaults to the standard tier policy rather than to "keep everything", or a
-        correct rule on the hourly tier would be reported as a problem."""
+        correct rule on the hourly tier would be reported as a problem.
+        :param purge_days: how long hidden versions should survive - a rule that purges
+        them sooner shortens the undo window the config asked for"""
         expire_days = DEFAULT_EXPIRE_DAYS if expire_days is None else expire_days
+        purge_days = DEFAULT_PURGE_DAYS if purge_days is None else purge_days
         try:
             rules = self.lifecycle_rules()
         except Exception as e:
@@ -393,14 +396,14 @@ class S3Storage(BackupStorage):
             rule = self.tier_expiry(rules, prefix)
             if rule is not None and rule['prefix'] == prefix:
                 reported.add(prefix)
-            tier_rows.append(self._tier_row(tier, prefix, rule, versioned, expire_days.get(tier)))
+            tier_rows.append(self._tier_row(tier, prefix, rule, versioned, expire_days.get(tier), purge_days))
         # what is left is every rule no tier speaks for: a parent or whole-bucket rule, a
         # per-schema tier folder, or anything the site set up itself
         return [{'label': 'Lifecycle', 'folder': rule['prefix'] or '(whole bucket)',
                  'status': 'Enabled', 'detail': self.rule_detail(rule, versioned)}
                 for rule in rules if rule['prefix'] not in reported] + tier_rows
 
-    def _tier_row(self, tier, prefix, rule, versioned, wanted):
+    def _tier_row(self, tier, prefix, rule, versioned, wanted, purge_days=DEFAULT_PURGE_DAYS):
         """One tier's rule measured against what the config asked for. 'action' marks the
         rows that mean something has to be done - the rest of protection_info is context
         (Object Lock off is the normal state for a lifecycle-managed bucket, not a fault).
@@ -429,6 +432,13 @@ class S3Storage(BackupStorage):
             return dict(row, status='Disabled', action='fix',
                         detail=f"expire after {self.days(rule['days'])}, but the hidden versions are never "
                                f'deleted - they keep being charged for')
+        if versioned and rule['noncurrent_days'] < purge_days:
+            # the hidden-version window is the time an attacker's hide or overwrite can
+            # still be undone, so a shorter one than asked for is a protection gap
+            return dict(row, status='Disabled', action='fix',
+                        detail=f"hidden versions purged after {self.days(rule['noncurrent_days'])}, sooner "
+                               f'than the {self.days(purge_days)} this config asks for - that window is '
+                               f'the time a deleted or overwritten dump can still be recovered')
         detail = self.rule_detail(rule, versioned)
         if rule['days'] > wanted:
             return dict(row, status='Suspended', action='warn',
@@ -456,7 +466,7 @@ class S3Storage(BackupStorage):
                     'detail': f'could not check {self.bucket} ({type(e).__name__})'}
         return {'state': 'ok', 'label': 'Bucket', 'status': 'Enabled', 'detail': f'{self.bucket} is accessible'}
 
-    def protection_info(self, tier_prefixes=None, expire_days=None):
+    def protection_info(self, tier_prefixes=None, expire_days=None, purge_days=None):
         protection = []
         versioned = False
         try:
@@ -502,4 +512,5 @@ class S3Storage(BackupStorage):
             protection.append({'label': 'Upload lock (BACKUP_STORAGE)', 'status': 'Enabled',
                                'detail': f"{self.lock_mode.lower()} retention: {', '.join(days)}"
                                          if days else f'{self.lock_mode.lower()} retention'})
-        return protection + self.lifecycle_info(tier_prefixes, versioned=versioned, expire_days=expire_days)
+        return protection + self.lifecycle_info(tier_prefixes, versioned=versioned, expire_days=expire_days,
+                                                purge_days=purge_days)

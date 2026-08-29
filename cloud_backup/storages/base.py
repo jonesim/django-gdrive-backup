@@ -159,7 +159,7 @@ class BackupStorage:
         backend has no such concept; raises where it cannot be read."""
         return False
 
-    def protection_info(self, tier_prefixes=None, expire_days=None):
+    def protection_info(self, tier_prefixes=None, expire_days=None, purge_days=None):
         """
         Describe the destination's data-protection configuration (soft delete,
         versioning, WORM/immutability) for display. Costs a few extra API requests,
@@ -169,6 +169,8 @@ class BackupStorage:
                               each tier - with expire_days, both from BackupDb.tier_policy()
         :param expire_days: {tier: days it should be kept, None for indefinitely} to
                             report each tier's real rule against what was asked for
+        :param purge_days: how long a hidden version should survive before the rule purges
+                           it - a tier rule that purges sooner is reported
         :return: list of {'label': str,
                           'status': 'Enabled'|'Disabled'|'Suspended'|'Unknown',
                           'detail': str or None,

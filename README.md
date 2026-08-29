@@ -293,6 +293,18 @@ application never applies these numbers - the destination's own rules are what a
 delete, and the page reads them back: a rule that expires a tier *sooner* than the config
 asks for is a red row, and one that keeps it *longer* an amber one.
 
+Expiry on a versioned bucket only *hides* a dump; the rule's second clause purges the
+hidden version `purge_days` later (default 1). That clause applies to every hidden
+version however it got hidden - including dumps an attacker holding the backup
+credential has deleted or overwritten - so it is also the window in which such an attack
+can still be undone. Trading a few days of hourly retention for a longer window costs
+about the same storage and buys a week to notice:
+
+    BACKUP_DB_TIERS = {'expire_days': {'hourly': 7}, 'purge_days': 7}   # 7 visible + 7 hidden
+
+The setup page generates the rules with that clause and flags a real rule that purges
+sooner.
+
 **Explicit deletes with a locked archive**
 
 Lifecycle rules are only as durable as the bucket configuration - anyone with

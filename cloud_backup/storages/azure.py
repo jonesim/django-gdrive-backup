@@ -154,7 +154,7 @@ class AzureStorage(BackupStorage):
                     'detail': f'could not check {name} ({code})'}
         return {'state': 'ok', 'label': 'Container', 'status': 'Enabled', 'detail': f'{name} is accessible'}
 
-    def protection_info(self, tier_prefixes=None, expire_days=None):
+    def protection_info(self, tier_prefixes=None, expire_days=None, purge_days=None):
         protection = []
         try:
             # account-level query - fails with a container-scoped SAS

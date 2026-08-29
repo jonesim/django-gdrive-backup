@@ -56,7 +56,8 @@ django-modals splits on '-' - it travels as the config's index in config_names()
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-from .db_tiers import DEFAULT_EXPIRE_DAYS, DELETE_APP, DELETE_LIFECYCLE, DELETE_MODES, LOCK_MODES
+from .db_tiers import (DEFAULT_EXPIRE_DAYS, DEFAULT_PURGE_DAYS, DELETE_APP, DELETE_LIFECYCLE, DELETE_MODES,
+                       LOCK_MODES)
 from .encryption import resolve_key
 from .storages import check_storage_settings
 
@@ -167,7 +168,13 @@ class BackupConfig:
         self.db_tier_delete = tier_options.get('delete', DELETE_LIFECYCLE)
         self.db_tier_lock_days = tier_options.get('lock_days') or {}
         self.db_tier_lock_mode = tier_options.get('lock_mode', 'COMPLIANCE')
+        # how long the bucket keeps a hidden version before purging it - the undo window
+        self.db_tier_purge_days = tier_options.get('purge_days', DEFAULT_PURGE_DAYS)
         if self.db_tiers:
+            if (not isinstance(self.db_tier_purge_days, int) or isinstance(self.db_tier_purge_days, bool)
+                    or self.db_tier_purge_days < 1):
+                raise ImproperlyConfigured(f"db_tiers purge_days for backup config '{name}' must be a whole "
+                                           f'number of days, at least 1')
             for option, values in (('expire_days', self.db_tier_expire_days),
                                    ('lock_days', self.db_tier_lock_days)):
                 unknown = set(values) - set(DEFAULT_EXPIRE_DAYS)

@@ -34,6 +34,13 @@ TIER_DIRS = (HOURLY, DAILY, MONTHLY)
 # db_tiers = {'expire_days': {'monthly': 2557}}  (7 years)
 DEFAULT_EXPIRE_DAYS = {HOURLY: 15, DAILY: 91, MONTHLY: None}
 
+# How long a hidden (previous) version survives before the bucket purges it - B2's
+# daysFromHidingToDeleting, S3's noncurrent-version expiry. Expiry only hides a dump, so
+# this is also the window in which anything hidden or overwritten by an attacker can still
+# be recovered: the same knob is the janitor and the undo window. Override per config with
+# db_tiers = {'purge_days': 7}
+DEFAULT_PURGE_DAYS = 1
+
 # Who does the deleting. DELETE_LIFECYCLE (the default) leaves it to the destination's
 # own rules, so the application needs no delete permission at all. DELETE_APP has the
 # application delete aged-out dumps itself - visible and logged, at the price of a

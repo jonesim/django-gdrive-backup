@@ -148,6 +148,6 @@ class GDriveStorage(BackupStorage):
                     'detail': f'{root} is not shared with the service account'}
         return {'state': 'ok', 'label': 'Drive folder', 'status': 'Enabled', 'detail': f'{root} is accessible'}
 
-    def protection_info(self, tier_prefixes=None, expire_days=None):
+    def protection_info(self, tier_prefixes=None, expire_days=None, purge_days=None):
         return [{'label': 'Trash (soft delete)', 'status': 'Enabled',
                  'detail': 'deleted backups stay in trash for 30 days unless the trash is emptied'}]

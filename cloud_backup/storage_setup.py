@@ -29,16 +29,14 @@ import sys
 from django.conf import settings
 
 from .config import get_config
-from .db_tiers import (DAILY, DEFAULT_EXPIRE_DAYS, DELETE_APP, DELETE_LIFECYCLE, MONTHLY, TIER_DIRS,
+from .db_tiers import (DAILY, DEFAULT_EXPIRE_DAYS, DEFAULT_PURGE_DAYS, DELETE_APP, DELETE_LIFECYCLE, MONTHLY,
+                       TIER_DIRS,
                        parse_daily, tier_prefixes)
 from .storages import get_storage
 
 # a daily dump appears the day after the hourly ones it comes from, so one day behind is
 # normal and two is not
 STALE_PROMOTION_DAYS = 2
-
-# B2 expiry only hides the file; without this the hidden version is kept and charged for
-HIDE_TO_DELETE_DAYS = 1
 
 # What the application actually calls: list_objects_v2 (listFiles), head/get_object and
 # download (readFiles), upload and server-side copy (writeFiles), head_bucket (listBuckets).
@@ -124,17 +122,19 @@ def redact(text, storage_settings):
     return text
 
 
-def b2_lifecycle_rule(prefix, hide_days, delete_days=HIDE_TO_DELETE_DAYS):
+def b2_lifecycle_rule(prefix, hide_days, delete_days=DEFAULT_PURGE_DAYS):
+    """B2 expiry only hides the file; delete_days later the hidden version is purged -
+    without that clause it would be kept and charged for."""
     return {'fileNamePrefix': prefix,
             'daysFromUploadingToHiding': hide_days,
             'daysFromHidingToDeleting': delete_days}
 
 
-def b2_tier_rules(prefixes, expire_days=None):
+def b2_tier_rules(prefixes, expire_days=None, purge_days=DEFAULT_PURGE_DAYS):
     """The rules one db folder's tiers need. A tier whose expire_days is None gets no
     rule at all - by default that is the monthly archive, which is kept indefinitely."""
     expire_days = expire_days or DEFAULT_EXPIRE_DAYS
-    return [b2_lifecycle_rule(prefixes[tier], expire_days[tier])
+    return [b2_lifecycle_rule(prefixes[tier], expire_days[tier], purge_days)
             for tier in TIER_DIRS if expire_days.get(tier)]
 
 
@@ -310,7 +310,8 @@ def guidance(check):
     lines = [f"{check['destination']} is not a Backblaze bucket, so no b2 commands are shown."]
     if check['wanted_rules']:
         lines.append('Create these expiry rules in your provider\'s console:')
-        lines += [f"{rule['fileNamePrefix']} - expire after {rule['daysFromUploadingToHiding']} days"
+        lines += [f"{rule['fileNamePrefix']} - expire after {rule['daysFromUploadingToHiding']} days, "
+                  f"noncurrent versions {rule['daysFromHidingToDeleting']} day(s) after that"
                   if rule['daysFromUploadingToHiding'] else
                   f"{rule['fileNamePrefix']} - expire noncurrent versions "
                   f"{rule['daysFromHidingToDeleting']} day(s) after deletion; current objects untouched"
@@ -459,8 +460,8 @@ def check_config(name, shell=None):
              'root': None, 'db_dir': None, 'facts': [], 'rows': [], 'state': 'unknown',
              'wanted_rules': [], 'keep_rules': [], 'dropped_rules': [], 'rules_unknown': False,
              'commands': [], 'guidance': [], 'backblaze': False, 'prunes': False, 'object_lock': False,
-             'expire_days': None, 'lock_days': {}, 'lock_mode': None, 'app_deletes': False,
-             'restore_only': False,
+             'expire_days': None, 'purge_days': DEFAULT_PURGE_DAYS, 'lock_days': {}, 'lock_mode': None,
+             'app_deletes': False, 'restore_only': False,
              'shell': shell if shell in SHELL_LABELS else default_shell()}
     try:
         config = get_config(name)
@@ -492,16 +493,18 @@ def check_config(name, shell=None):
     # reporting them again here would double every warning on the machine that only reads
     if config.db_tiers and not config.restore_only:
         check['expire_days'] = config.db_tier_expire_days
+        check['purge_days'] = config.db_tier_purge_days
         if config.db_tier_delete == DELETE_LIFECYCLE:
             check['wanted_rules'] = b2_tier_rules(tier_prefixes(config.db_dir.strip('/')),
-                                                  check['expire_days'])
+                                                  check['expire_days'], check['purge_days'])
         elif any(check['expire_days'].values()):
             # the application does the expiry deletes, so no per-tier rules - but on a
             # versioned bucket those deletes only hide the dumps, so one noncurrent-only
             # rule over the whole db folder (schema sub-folders included) expires the
             # hidden versions without ever hiding a current dump. Dropped again below
             # when the bucket turns out not to be versioned
-            check['wanted_rules'] = [b2_lifecycle_rule(f"{config.db_dir.strip('/')}/", None)]
+            check['wanted_rules'] = [b2_lifecycle_rule(f"{config.db_dir.strip('/')}/", None,
+                                                       check['purge_days'])]
     try:
         storage = get_storage(storage_settings)
     except Exception as e:  # noqa: BLE001 - bad credentials, missing SDK, unknown backend
@@ -525,7 +528,7 @@ def check_config(name, shell=None):
         check['rows'] += storage.protection_info(
             tier_prefixes=(tier_prefixes(config.db_dir.strip('/'))
                            if config.db_tiers and not check['app_deletes'] else None),
-            expire_days=check['expire_days'])
+            expire_days=check['expire_days'], purge_days=check['purge_days'])
     except Exception as e:  # noqa: BLE001
         check['rows'].append({'label': 'Protection', 'status': 'Unknown',
                               'detail': redact(e, storage_settings)})
@@ -584,7 +587,7 @@ def add_schema_rules(check, storage, config):
     names = sorted(f['name'] for f in folders if f['name'] not in TIER_DIRS)
     for schema in names[:MAX_SCHEMA_RULES]:
         check['wanted_rules'] += b2_tier_rules(tier_prefixes(f"{config.db_dir.strip('/')}/{schema}"),
-                                               config.db_tier_expire_days)
+                                               config.db_tier_expire_days, config.db_tier_purge_days)
     if len(names) > MAX_SCHEMA_RULES:
         check['guidance'].append(f'{len(names) - MAX_SCHEMA_RULES} more schema folders need the same pair '
                                  f'of rules and are not included above.')
