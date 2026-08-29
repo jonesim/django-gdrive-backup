@@ -9,8 +9,10 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
     from .tasks import ajax_restore, ajax_backup, ajax_verify_files
     from . import enhanced_views as views
     from . import modals as modals
+    from .views import BackupStatusView
 
-    def backup_urlpatterns(backup_view=None, schema_table_view=None, files_view=None, setup_view=None):
+    def backup_urlpatterns(backup_view=None, schema_table_view=None, files_view=None, setup_view=None,
+                           status_view=None):
         """Full enhanced pattern list with the page views swappable, so a branded
         subclass keeps the URL names the menus and modals reverse. Host usage:
         path('backup/', include((backup_urlpatterns(backup_view=MyBackupView), 'cloud_backup')))"""
@@ -18,6 +20,7 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
         schema_table_view = schema_table_view or views.SchemaTableView
         files_view = files_view or views.BackupFilesView
         setup_view = setup_view or views.StorageSetupView
+        status_view = status_view or BackupStatusView
         return [
             path('', backup_view.as_view(), name='backup_info'),
             path('files/', files_view.as_view(), name='backup_files_root'),
@@ -25,6 +28,7 @@ if all([apps.is_installed(m) for m in ['django_modals', 'django_datatables', 'dj
             path('files/<int:backup_dir>/<path:sub_path>/', files_view.as_view(), name='backup_files_path'),
             # single-segment paths must stay above <str:schema>, which matches anything
             path('setup/', setup_view.as_view(), name='storage_setup'),
+            path('status/', status_view.as_view(), name='backup_status'),
             path('modal/verify_files/<str:slug>/', modals.AdminTaskModal.as_view(task=ajax_verify_files),
                  name='verify_files'),
             path('<str:schema>/', backup_view.as_view(), name='schema_info'),
@@ -53,4 +57,5 @@ else:
         path('', views.BackupInfo.as_view(), name='backup-info'),
         path('backupnow', views.BackupView.as_view(), name='backup-now'),
         path('empty-trash', views.EmptyTrashView.as_view(), name='empty-trash'),
+        path('status/', views.BackupStatusView.as_view(), name='backup_status'),
     ]
