@@ -317,9 +317,12 @@ def guidance(check):
     return lines
 
 
-def deletion_row(config):
+def deletion_row(config, storage=None):
     """In app-delete mode the tiers have no lifecycle rules by design, so say what does
-    the deleting instead of reporting every tier as unprotected."""
+    the deleting instead of reporting every tier as unprotected. Given the storage to
+    ask, also checks the versioned-bucket trap: a plain delete only hides the dump
+    there, so without a hidden-version expiry rule the old versions are kept and
+    charged for."""
     if not config.db_tiers or config.db_tier_delete != DELETE_APP:
         return None
     expires = [f'{tier} after {days} days' for tier, days in config.db_tier_expire_days.items() if days]
@@ -327,7 +330,31 @@ def deletion_row(config):
     detail = 'the application deletes ' + (', '.join(expires) or 'nothing')
     if kept:
         detail += f", and keeps {', '.join(kept)}"
-    return {'label': 'Deletion', 'status': 'Enabled', 'detail': detail}
+    row = {'label': 'Deletion', 'status': 'Enabled', 'detail': detail}
+    uncovered = unexpired_hidden_tiers(config, storage) if expires and storage is not None else []
+    if uncovered:
+        row.update(badge='warning', action='warn',
+                   detail=detail + ' - but deletes on this versioned bucket only hide the dumps, and no '
+                                   f"rule expires the hidden versions under {', '.join(uncovered)} - they "
+                                   'are kept and charged for')
+    return row
+
+
+def unexpired_hidden_tiers(config, storage):
+    """The app-deleted tiers whose hidden versions nothing expires, or [] - on a
+    versioned bucket a plain delete only hides the object, so each deleted tier needs
+    a rule with noncurrent days covering it. Never raises: where versioning or the
+    rules cannot be read, there is nothing sure enough to warn about."""
+    try:
+        if not storage.versioned():
+            return []
+        rules = storage.lifecycle_rules() or []
+    except Exception:  # noqa: BLE001 - a restricted key may not read the bucket configuration
+        return []
+    db_dir = config.db_dir.strip('/')
+    return [tier for tier, days in config.db_tier_expire_days.items() if days
+            and not any(rule['noncurrent_days'] and f'{db_dir}/{tier}/'.startswith(rule['prefix'])
+                        for rule in rules)]
 
 
 def lock_row(storage, config):
@@ -487,7 +514,7 @@ def check_config(name, shell=None):
     except Exception as e:  # noqa: BLE001
         check['rows'].append({'label': 'Protection', 'status': 'Unknown',
                               'detail': redact(e, storage_settings)})
-    check['rows'] += [row for row in [deletion_row(config)] if row]
+    check['rows'] += [row for row in [deletion_row(config, storage)] if row]
     if config.db_tiers and status['state'] == 'ok':
         check['rows'].append(promotion_row(storage, config))
         check['rows'] += [row for row in [lock_row(storage, config)] if row]

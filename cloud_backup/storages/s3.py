@@ -347,6 +347,11 @@ class S3Storage(BackupStorage):
             target['delete_markers'] = target['delete_markers'] or rule['delete_markers']
         return list(merged.values())
 
+    def versioned(self):
+        """Whether the bucket keeps previous versions - B2 buckets seen through the S3
+        API always report Enabled."""
+        return (self.s3.get_bucket_versioning(Bucket=self.bucket).get('Status') or '') == 'Enabled'
+
     def rule_detail(self, rule, versioned=False):
         """What a rule does, in the order it happens. On a versioned bucket expiry only
         hides the current version, so the noncurrent clause is what actually deletes."""

@@ -153,6 +153,12 @@ class BackupStorage:
         exist but cannot be read."""
         return None
 
+    def versioned(self):
+        """Whether the destination keeps previous versions of overwritten and deleted
+        objects, meaning a plain delete only hides the current one. False where the
+        backend has no such concept; raises where it cannot be read."""
+        return False
+
     def protection_info(self, tier_prefixes=None, expire_days=None):
         """
         Describe the destination's data-protection configuration (soft delete,

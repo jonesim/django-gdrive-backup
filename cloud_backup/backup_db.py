@@ -131,7 +131,7 @@ class BackupDb(BaseBackup):
         explained by the config rather than the destination."""
         from .storage_setup import deletion_row
         rows = self.storage.protection_info(**self.tier_policy())
-        row = deletion_row(self.config)
+        row = deletion_row(self.config, self.storage)
         if row:
             rows.append(row)
         return rows
