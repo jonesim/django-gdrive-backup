@@ -21,7 +21,7 @@ offsite store plus an unencrypted database copy for a staging server:
 Config keys: storage (BACKUP_STORAGE-style dict), encryption (True = derive from the
 encrypted-credentials SETTINGS_KEY, or a urlsafe-base64 32-byte key string), db
 (include the database, default True), db_dir, dirs, azure_dirs, azure_source, s3_dirs,
-retention, changed_files, db_tiers, restore_only. A key absent from a named config
+retention, changed_files, db_tiers, restore_only, status. A key absent from a named config
 inherits the corresponding legacy global setting (BACKUP_STORAGE, BACKUP_ENCRYPTION,
 BACKUP_DIRS, ...), which is also how installations without BACKUP_CONFIGS keep working
 unchanged - their globals simply become the 'default' config.
@@ -61,6 +61,16 @@ from .encryption import resolve_key
 from .storages import check_storage_settings
 
 DEFAULT_CONFIG = 'default'
+
+# Thresholds the status check (status.py) grades a destination against; a config's
+# 'status' dict overrides any of them, or BACKUP_STATUS for the legacy globals.
+DEFAULT_STATUS = {
+    'grace_minutes': 30,        # how late a scheduled run may be before it counts as missed
+    'max_age_hours': 24,        # newest dump / run allowed this old when there is no beat schedule
+    'size_drop': 0.8,           # a dump smaller than this fraction of the previous one is suspect
+    'promotion_deadline': '06:30',  # local time by which yesterday's daily copy must exist
+    'stuck_hours': 6,           # a run still marked running after this long has died
+}
 
 CHANGED_OVERWRITE = 'overwrite'
 CHANGED_PROTECT = 'protect'
@@ -191,6 +201,13 @@ class BackupConfig:
                     f"{'' if 'retention' in config else ' (inherited from BACKUP_DB_RETENTION)'} - add "
                     f"'retention': [] to the config to let the bucket lifecycle rules do the pruning")
         # fails fast on a bad key before anything is backed up
+        status = dict(DEFAULT_STATUS, **(getattr(settings, 'BACKUP_STATUS', None) or {}))
+        status.update(config.get('status') or {})
+        unknown = set(status) - set(DEFAULT_STATUS)
+        if unknown:
+            raise ImproperlyConfigured(f"status for backup config '{name}' has unknown option(s) "
+                                       f'{", ".join(sorted(unknown))} - expected {", ".join(DEFAULT_STATUS)}')
+        self.status = status
         self.encryption_key = resolve_key(config.get('encryption',
                                                      getattr(settings, 'BACKUP_ENCRYPTION', None)))
         self.changed_files = config.get('changed_files',
