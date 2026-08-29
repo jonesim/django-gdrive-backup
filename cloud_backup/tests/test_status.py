@@ -13,8 +13,8 @@ from cloud_backup import status as st
 from cloud_backup.config import DEFAULT_STATUS
 from cloud_backup.models import BackupRun
 from cloud_backup.runs import record_run
-from cloud_backup.status import (FAILED, MISSING, OK, RUNNING, STALE, UNKNOWN, collect, daily_check, dump_checks,
-                                 latest_due_slot, monthly_check, run_check, schedule_slots)
+from cloud_backup.status import (FAILED, MISSING, OK, RUNNING, STALE, UNKNOWN, Schedule, collect, daily_check,
+                                 dump_checks, latest_due_slot, monthly_check, run_check, schedule_slots)
 from cloud_backup.views import BackupStatusView
 
 SCHEDULE = {
@@ -25,7 +25,7 @@ SCHEDULE = {
     'promote': {'task': 'cloud_backup.tasks.promote_db_tiers', 'kwargs': {'config': 'database'},
                 'schedule': crontab(minute=0, hour=6)},
 }
-DB_SLOTS = [(h, 50) for h in (7, 9, 11, 13, 15, 17, 19, 21, 23)]
+DB_SLOTS = Schedule([(h, 50) for h in (7, 9, 11, 13, 15, 17, 19, 21, 23)])
 OPTIONS = dict(DEFAULT_STATUS)
 # a mid-morning, after the 09:50 run has had its grace period
 NOW = datetime.datetime(2026, 8, 28, 10, 30)
@@ -48,16 +48,26 @@ def dump(taken, size=1_000_000):
 class ScheduleTest(SimpleTestCase):
 
     def test_slots_per_config(self):
-        self.assertEqual(schedule_slots(BackupRun.BACKUP, 'database'), DB_SLOTS)
-        self.assertEqual(schedule_slots(BackupRun.BACKUP, 'files'), [(1, 30)])
-        self.assertEqual(schedule_slots(BackupRun.PROMOTE, 'database'), [(6, 0)])
+        self.assertEqual(schedule_slots(BackupRun.BACKUP, 'database').slots, DB_SLOTS.slots)
+        self.assertEqual(schedule_slots(BackupRun.BACKUP, 'files').slots, [(1, 30)])
+        self.assertEqual(schedule_slots(BackupRun.PROMOTE, 'database').slots, [(6, 0)])
         self.assertIsNone(schedule_slots(BackupRun.PROMOTE, 'files'))
 
     @override_settings(CELERY_BEAT_SCHEDULE={'b': {'task': 'cloud_backup.tasks.backup',
                                                    'schedule': crontab(hour=2, minute=0)}},
                        BACKUP_CONFIGS={'only': CONFIGS['database']})
     def test_entry_without_config_is_the_default(self):
-        self.assertEqual(schedule_slots(BackupRun.BACKUP, 'only'), [(2, 0)])
+        self.assertEqual(schedule_slots(BackupRun.BACKUP, 'only').slots, [(2, 0)])
+
+    @override_settings(CELERY_BEAT_SCHEDULE={'b': {'task': 'cloud_backup.tasks.backup',
+                                                   'schedule': crontab(hour='8-19', minute=10,
+                                                                       day_of_week='mon-fri')}},
+                       BACKUP_CONFIGS={'only': CONFIGS['database']})
+    def test_day_constraints_captured(self):
+        schedule = schedule_slots(BackupRun.BACKUP, 'only')
+        self.assertEqual(schedule.days_of_week, {1, 2, 3, 4, 5})
+        self.assertTrue(schedule.fires_on(datetime.date(2026, 8, 28)))    # a Friday
+        self.assertFalse(schedule.fires_on(datetime.date(2026, 8, 30)))   # a Sunday
 
     @override_settings(CELERY_BEAT_SCHEDULE={'b': {'task': 'cloud_backup.tasks.backup', 'schedule': 3600}})
     def test_interval_schedule_has_no_slots(self):
@@ -70,6 +80,23 @@ class ScheduleTest(SimpleTestCase):
                          datetime.datetime(2026, 8, 28, 7, 50))
         # overnight the last due run is yesterday's
         self.assertEqual(latest_due_slot(NOW.replace(hour=3), DB_SLOTS, GRACE), datetime.datetime(2026, 8, 27, 23, 50))
+
+    def test_weekday_schedule_over_the_weekend(self):
+        weekdays = Schedule(DB_SLOTS.slots, days_of_week={1, 2, 3, 4, 5})   # celery: 0 is Sunday
+        friday_last = datetime.datetime(2026, 8, 28, 23, 50)
+        # all weekend the last due run stays Friday night's, so a Friday backup is not stale
+        self.assertEqual(latest_due_slot(datetime.datetime(2026, 8, 30, 10, 30), weekdays, GRACE), friday_last)
+        # and still on Monday before the first slot's grace has passed
+        self.assertEqual(latest_due_slot(datetime.datetime(2026, 8, 31, 7, 30), weekdays, GRACE), friday_last)
+        self.assertEqual(latest_due_slot(datetime.datetime(2026, 8, 31, 8, 30), weekdays, GRACE),
+                         datetime.datetime(2026, 8, 31, 7, 50))
+        checks = dump_checks(datetime.datetime(2026, 8, 30, 10, 30), [dump(friday_last)], weekdays, OPTIONS)
+        self.assertEqual(checks[0]['status'], OK)
+        self.assertEqual(checks[0]['alert_at'], 'older than the Fri 23:50 run')
+
+    def test_monthly_schedule(self):
+        monthly = Schedule([(0, 30)], days_of_month={1})
+        self.assertEqual(latest_due_slot(NOW, monthly, GRACE), datetime.datetime(2026, 8, 1, 0, 30))
 
 
 @override_settings(USE_TZ=False)

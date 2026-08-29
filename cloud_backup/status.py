@@ -95,9 +95,27 @@ def default_config_name():
     return names[0] if len(names) == 1 else None
 
 
+class Schedule:
+    """The times a beat crontab fires: sorted (hour, minute) slots plus the day
+    constraints, so a mon-fri backup is not reported stale over the weekend. The day
+    sets use celery's conventions - day_of_week 0 is Sunday, and day_of_week and
+    day_of_month are ANDed, as crontab.is_due does; None means unrestricted."""
+
+    def __init__(self, slots, days_of_week=None, days_of_month=None, months=None):
+        self.slots = slots
+        self.days_of_week = days_of_week
+        self.days_of_month = days_of_month
+        self.months = months
+
+    def fires_on(self, day):
+        return ((self.days_of_week is None or day.isoweekday() % 7 in self.days_of_week)
+                and (self.days_of_month is None or day.day in self.days_of_month)
+                and (self.months is None or day.month in self.months))
+
+
 def schedule_slots(kind, config_name):
-    """Sorted (hour, minute) slots the beat schedule fires the task at for this config,
-    or None when it is not scheduled here."""
+    """The Schedule the beat schedule fires the task on for this config, or None when
+    it is not scheduled here."""
     task = TASKS[kind]
     for entry in (getattr(settings, 'CELERY_BEAT_SCHEDULE', None) or {}).values():
         if entry.get('task') != task:
@@ -108,29 +126,37 @@ def schedule_slots(kind, config_name):
         hours, minutes = getattr(crontab, 'hour', None), getattr(crontab, 'minute', None)
         if hours is None or minutes is None:
             return None     # an interval schedule - graded by age instead
-        return sorted((h, m) for h in hours for m in minutes)
+        return Schedule(sorted((h, m) for h in hours for m in minutes),
+                        crontab.day_of_week, crontab.day_of_month, crontab.month_of_year)
     return None
 
 
-def latest_due_slot(now, slots, grace):
+# far enough back to find the last firing of even an annual crontab
+MAX_LOOKBACK_DAYS = 366 + 31
+
+
+def latest_due_slot(now, schedule, grace):
     """The most recent scheduled time whose run should have finished by now, or None
-    when no slot has come due yet."""
-    due = []
-    for days_back in (0, 1):
+    when no slot has come due yet. Days the crontab does not fire on are skipped, so
+    the last due slot of a mon-fri schedule stays Friday's until Monday morning."""
+    for days_back in range(MAX_LOOKBACK_DAYS):
         day = now.date() - datetime.timedelta(days=days_back)
-        for hour, minute in slots:
-            slot = at(day, datetime.time(hour, minute))
-            if slot + grace <= now:
-                due.append(slot)
-    return max(due) if due else None
+        if not schedule.fires_on(day):
+            continue
+        due = [at(day, datetime.time(hour, minute)) for hour, minute in schedule.slots
+               if at(day, datetime.time(hour, minute)) + grace <= now]
+        if due:
+            return max(due)
+    return None
 
 
-def grade_time(now, when, slots, options):
+def grade_time(now, when, schedule, options):
     """(status, alert_at text) for something that should be as new as the last scheduled
     run - or, with no schedule, no older than max_age_hours."""
-    if slots:
-        due = latest_due_slot(now, slots, datetime.timedelta(minutes=options['grace_minutes']))
-        alert_at = f'older than the {due:%H:%M} run' if due else 'no run due yet'
+    if schedule:
+        due = latest_due_slot(now, schedule, datetime.timedelta(minutes=options['grace_minutes']))
+        day = '' if due is None or due.date() == now.date() else f'{due:%a} '
+        alert_at = f'older than the {day}{due:%H:%M} run' if due else 'no run due yet'
         return (OK if due is None or (when is not None and when >= due) else STALE), alert_at
     max_age = datetime.timedelta(hours=options['max_age_hours'])
     alert_at = f'older than {options["max_age_hours"]} h (no beat schedule here)'
@@ -222,11 +248,11 @@ def promotion_deadline(options):
 # ----------------------------------------------------------------------------------------
 # The checks
 
-def dump_checks(now, dumps, slots, options):
+def dump_checks(now, dumps, schedule, options):
     if not dumps:
         return [check('Latest database dump', 'none found', 'missing', MISSING)]
     taken, size, key = dumps[0]
-    status, alert_at = grade_time(now, taken, slots, options)
+    status, alert_at = grade_time(now, taken, schedule, options)
     checks = [check('Latest database dump', f'{fmt(taken)} ({fmt_age(now, taken)}), {fmt_size(size)}',
                     alert_at, status, taken=taken.isoformat(), size=size, key=key)]
     if len(dumps) > 1:
@@ -271,7 +297,7 @@ def destination_check(backup):
                  OK if state.get('state') == 'ok' else FAILED)
 
 
-def run_check(now, kind, run, slots, options):
+def run_check(now, kind, run, schedule, options):
     metric = RUN_METRICS[kind]
     if run is None:
         return check(metric, f'no run recorded in the last {options.get("history_days", history_days())} days',
@@ -286,7 +312,7 @@ def run_check(now, kind, run, slots, options):
         stuck = now - started > datetime.timedelta(hours=options['stuck_hours'])
         return check(metric, f'running since {fmt(started)} ({fmt_age(now, started)})',
                      f'running for more than {options["stuck_hours"]} h', FAILED if stuck else RUNNING, **detail)
-    status, alert_at = grade_time(now, finished, slots, options)
+    status, alert_at = grade_time(now, finished, schedule, options)
     return check(metric, f'succeeded {fmt(finished)} ({fmt_age(now, finished)})', alert_at, status, **detail)
 
 

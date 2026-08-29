@@ -818,8 +818,9 @@ only admits a superuser or the backup permission; subclass `cloud_backup.views
 and pass it as `backup_urlpatterns(status_view=...)`.
 
 Rows are graded against the `crontab` entries in `CELERY_BEAT_SCHEDULE` for the config
-(a run is late once `grace_minutes` past its slot), or by plain age (`max_age_hours`) on a
-server where the task is not scheduled. A dump smaller than `size_drop` of the one before it
+(a run is late once `grace_minutes` past its slot, counting only the days the crontab
+fires - a `mon-fri` schedule is not stale over the weekend), or by plain age
+(`max_age_hours`) on a server where the task is not scheduled. A dump smaller than `size_drop` of the one before it
 is flagged, and with `BACKUP_DB_TIERS` the daily and monthly copies must be there by
 `promotion_deadline`. The defaults are in `cloud_backup.config.DEFAULT_STATUS`; override
 them for every config with `BACKUP_STATUS = {...}` or per config with a `'status': {...}` key.
