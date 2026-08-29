@@ -730,8 +730,9 @@ def setup_panel(check, copy_button=None, shell_buttons=''):
     if check['guidance']:
         html += '<ul class="mt-3">' + ''.join(f'<li>{escape(line)}</li>' for line in check['guidance']) + '</ul>'
     if check['commands']:
-        heading = ('Run these to set the destination up' if state[1] == 'Action required'
-                   else 'Reference only - this destination already matches')
+        heading = {'danger': 'Run these to set the destination up',
+                   'warning': 'Run these if the warnings above call for it',
+                   }.get(state[0], 'Reference only - this destination already matches')
         html += f'<h6 class="mt-3">{heading} <small class="text-muted">(b2 command-line tool v4)</small></h6>'
         html += f'<div class="d-flex mb-2">{shell_buttons}<div class="ml-auto">'
         html += (copy_button() if copy_button else '') + '</div></div>'
