@@ -1,36 +1,73 @@
+# django-cloud-backup
+
 [![PyPI version](https://badge.fury.io/py/django-cloud-backup.svg)](https://badge.fury.io/py/django-cloud-backup)
 
+**Django backups that survive your credentials being stolen.**
 
-**django-cloud-backup** 
+Backs up PostgreSQL databases, local folders, S3 buckets and Azure containers to Google
+Drive, S3-compatible storage (AWS, Backblaze B2, Cloudflare R2) or Azure Blob Storage -
+and then holds them down so that whoever gets into your server cannot destroy them.
 
-Backs up django postgres databases, local folders and S3 folders to Google Drive, S3-compatible storage (AWS, Backblaze B2, Cloudflare R2) or Azure Blob Storage.
+An attacker who reaches your settings has your backup credentials too. The usual
+arrangement - scheduled dumps to a bucket the application can delete from - fails at
+exactly the moment it is needed: the backups are wiped, or quietly overwritten with
+encrypted copies on the next scheduled run. This package is built for that threat model.
 
-**Migrating from django-gdrive-backup**
+## What it does that a scheduled dump does not
 
-This package was previously published as `django-gdrive-backup`. The rename is a breaking
-release; upgrading requires the following changes in your project:
+- **Object Lock retention stamped at upload.** Every dump is immutable for a fixed window,
+  topped up by a scheduled task; in `COMPLIANCE` mode not even the bucket owner can shorten
+  it. See [Ransomware protection](#ransomware-protection).
+- **An application that never deletes.** With `BACKUP_DB_TIERS` dumps are promoted between
+  hourly/daily/monthly prefixes by server-side copy and the bucket's own lifecycle rules do
+  all the expiry, so the backup credential needs no delete permission at all. See
+  [Lifecycle-managed database backups](#lifecycle-managed-database-backups-s3b2r2).
+- **Changed source files cannot silently overwrite good backups.**
+  `BACKUP_CHANGED_FILES = 'protect'` refuses the overwrite and fails the run; `'history'`
+  keeps the previous version first. See [Ransomware protection](#ransomware-protection).
+- **Read-only destinations.** A config marked `restore_only` refuses every write and
+  generates a read-only key - for the staging box that shares an encrypted settings file
+  with live. See [Live, staging and local machines](#live-staging-and-local-machines).
+- **It verifies the bucket is actually configured that way.** The management page queries
+  the destination and reports versioning, soft delete, Object Lock and lifecycle rules, and
+  flags any hidden version or overwrite the retention policy cannot explain. See
+  [Setting up the bucket](#setting-up-the-bucket).
+- **It tells you when the backups stop being current.** Every run is recorded and graded
+  against your `CELERY_BEAT_SCHEDULE`, browsable in a Run Log page and served as json at
+  `backup/status/` for a monitoring agent. See
+  [Checking that the backups are current](#checking-that-the-backups-are-current).
+- **Optional client-side AES-256-GCM encryption**, so the destination never holds
+  plaintext. See [Client-side encryption](#client-side-encryption).
 
-- Install `django-cloud-backup` (and its extras, e.g. `django-cloud-backup[s3]`) instead of
-  `django-gdrive-backup`
-- `INSTALLED_APPS`: `'gdrive_backup'` → `'cloud_backup'`
-- urls.py: `include('gdrive_backup.urls')` → `include('cloud_backup.urls')`, and any
-  reverses/`{% url %}` tags use the `cloud_backup:` namespace instead of `gdrive_backup:`
-- Celery beat schedules: task names are now `cloud_backup.tasks.*`
-  (e.g. `cloud_backup.tasks.backup`)
-- Settings renamed: `BACKUP_GDRIVE_DIR` → `BACKUP_ROOT`, `BACKUP_GDRIVE_DB` → `BACKUP_DB_DIR`
-  (they apply to every destination backend, not just Google Drive). `BACKUP_TEAM_DRIVE` is
-  unchanged.
-- Removed legacy method aliases `backup_db_gdrive`, `restore_gdrive_db` and
-  `restore_gdrive_folder` - use `backup_db_to_storage`, `restore_db_from_storage` and
-  `restore_folder`
-- Client-side encryption: the file format constants changed with the rename, so files
-  encrypted by pre-release versions of the encryption feature cannot be read. No published
-  release included encryption, so this affects no production backups.
+Alongside that: a Django management UI for browsing, verifying and restoring backups,
+Celery tasks for scheduling, MD5/ETag deduplication, per-schema database backups, and
+several named destinations in one project.
 
-Backups already in your storage destination are unaffected - folder layout and metadata
-are unchanged, and existing backups restore as before.
+## Install
 
-**encrypted-credentials**
+    pip install django-cloud-backup                # Google Drive destination
+    pip install django-cloud-backup[s3]            # AWS S3, Backblaze B2, Cloudflare R2
+    pip install django-cloud-backup[azure]         # Azure Blob Storage
+    pip install django-cloud-backup[encryption]    # client-side encryption
+
+settings.py:
+
+    INSTALLED_APPS = ['cloud_backup', ...]
+    BACKUP_ROOT = 'django_backup'
+
+Google Drive is the default destination and needs a service account - the setup walkthrough
+starts below. To back up to a bucket instead, set `BACKUP_STORAGE`; see
+[Choosing a backup destination](#choosing-a-backup-destination).
+
+Already running `django-gdrive-backup`? See
+[Migrating from django-gdrive-backup](#migrating-from-django-gdrive-backup) at the end.
+
+## Setup
+
+The walkthrough below configures the default Google Drive destination.
+For a bucket destination, skip to [Choosing a backup destination](#choosing-a-backup-destination).
+
+## encrypted-credentials
 
 This package uses encrypted-credentials and the instructions there could be useful. Adding the following lines to **settings.py** will initialise the package
 
@@ -39,13 +76,13 @@ This package uses encrypted-credentials and the instructions there could be usef
     add_encrypted_settings(globals())
 
 
-**Create service account**
+## Create service account
 
 Requires a Google service account with the Google Drive API enabled
 
 https://console.cloud.google.com/apis/credentials/serviceaccountkey
 
-**Add to cloud_backup installed apps**
+## Add to cloud_backup installed apps
 
 settings.py
 
@@ -53,7 +90,7 @@ settings.py
             'cloud_backup',
         ]
 
-**Store service account key**
+## Store service account key
 
 By default *encrypted-credentials* is used to store the key. Create a directory off the django projects BASE_DIR called credentials and save the json key. 
 
@@ -65,24 +102,24 @@ settings.py
     }
   
 
-**Create Google Drive folder and share with service account**
+## Create Google Drive folder and share with service account
 
 With a Google Drive account create a folder and share with the email address of the service account.
 
 
-**Ensure psql is available to python subprocess**
+## Ensure psql is available to python subprocess
 
 For docker containers you may need to something similar to the following line in the Dockerfile dependent on the version of Postgres.
 
     RUN apt-get -y install postgresql-client-11
 
-**Configure database backup**
+## Configure database backup
 
 settings.py
 
     BACKUP_ROOT = 'django_backup'
 
-**Choosing a backup destination**
+## Choosing a backup destination
 
 Google Drive is the default destination and needs no extra settings beyond those above.
 Backups can instead be stored on any S3-compatible service or Azure Blob Storage by adding
@@ -138,7 +175,7 @@ backup page queries the destination and shows whether versioning, soft delete an
 Object Lock/immutability (WORM) are actually enabled, so a missing safety net is
 visible at a glance.
 
-**Ransomware protection**
+## Ransomware protection
 
 If backups re-sync whenever a source file changes, an attacker encrypting your files
 would overwrite the good backups on the next scheduled run. Protection is layered:
@@ -208,7 +245,7 @@ With delete-less credentials, pruning logs a warning instead of failing the back
 leave `BACKUP_DB_RETENTION` unset and let bucket lifecycle rules do the pruning - the
 tiered layout below is the supported way to do that.
 
-**Lifecycle-managed database backups (S3/B2/R2)**
+## Lifecycle-managed database backups (S3/B2/R2)
 
 `BACKUP_DB_RETENTION` prunes from the application: it lists the dumps and deletes the
 ones it does not want to keep. `BACKUP_DB_TIERS` is the alternative - the application
@@ -324,7 +361,7 @@ names them, says whether they are `hidden` (still recoverable), `overwritten` or
 `purged`, and gives the deadline the purge clock sets - run `backup_status` more often
 than `purge_days`.
 
-**Explicit deletes with a locked archive**
+### Explicit deletes with a locked archive
 
 Lifecycle rules are only as durable as the bucket configuration - anyone with
 `writeBuckets` can shorten them, and they delete silently. `delete: 'app'` moves the
@@ -359,7 +396,7 @@ retention date rather than trusting the settings.
 The trade-off is explicit: the backup credential can now delete, which is what an attacker
 would use it for. What survives that is exactly the tiers in `lock_days`.
 
-**Setting up the bucket**
+### Setting up the bucket
 
 Since the package never creates a bucket or writes a lifecycle rule, the *Storage Setup*
 tab on the backup page (`/backup/setup/`) works out what is missing and shows the
@@ -443,7 +480,7 @@ the browser's clipboard API, which only works over https or on localhost.
 `python manage.py storage_setup [--config <name>]` prints the same thing on a server
 with no web UI.
 
-**Client-side encryption**
+## Client-side encryption
 
 By default backups are stored as the provider receives them - anyone with access to
 the Drive folder or bucket can read a full database dump. Setting `BACKUP_ENCRYPTION`
@@ -483,7 +520,7 @@ Notes:
 - With multiple backup configurations (below), encryption is set per config rather
   than globally.
 
-**Multiple backup configurations**
+## Multiple backup configurations
 
 `BACKUP_CONFIGS` lets one project back up to several destinations with different
 behaviour per destination - the classic case being a hardened offsite backup plus an
@@ -554,7 +591,7 @@ Backups made by one config restore with that config's key: restoring an encrypte
 backup through a config with a different key (or none) fails cleanly.
 
 
-**Live, staging and local machines**
+### Live, staging and local machines
 
 The usual three-role setup: one server produces the backups, and the others restore them
 to get a copy of live data to work with.
@@ -622,13 +659,13 @@ If a machine only ever restores and backs nothing up at all, `BACKUP_RESTORE_ONL
 sets the flag globally without needing `BACKUP_CONFIGS`.
 
 
-**Management commands**
+## Management commands
 
     python manage.py backup_website
     python manage.py restore_db
     python manage.py storage_setup
 
-**Management page**
+## Management page
 
 urls.py
 
@@ -650,7 +687,7 @@ from the following PyPi packages
 
     django-nested-modals, django-filtered-datatables, django-tab-menus, django-ajax-helpers
 
-**Branding the management page**
+### Branding the management page
 
 The enhanced page views build the whole UI (menus, storage info and tables) into a
 single HTML string, `{{ backup_content }}`, so it can be dropped into your own
@@ -696,7 +733,7 @@ Register the subclasses with `backup_urlpatterns` so the menu links and modals
 The unbranded standard page remains the default when using
 `include('cloud_backup.urls')`.
 
-**Restoring from the management page**
+### Restoring from the management page
 
 Restore and drop-schema actions on the enhanced management page require
 
@@ -710,7 +747,7 @@ development machines where restoring is wanted. The `manage.py restore_db`
 command is not affected by this setting, so disaster recovery on a live server
 remains possible from the command line.
 
-**Browsing and verifying folder backups**
+## Browsing and verifying folder backups
 
 When `BACKUP_DIRS`, `AZURE_BACKUP_DIRS` (or `S3_BACKUP_DIRS`) is configured, the
 enhanced management page shows a `Backup Files` button that backs up all configured
@@ -750,7 +787,7 @@ other backup button, require a superuser. Note that on an S3-compatible
 destination with client-side encryption enabled, listing the checksums costs one
 metadata request per file, so the page can be slow to load for very large trees.
 
-**Configure Azure folder backups**
+## Configure Azure folder backups
 
 Media that django-storages keeps in Azure Blob Storage has no local directory for
 `BACKUP_DIRS` to back up. `AZURE_BACKUP_DIRS` names prefixes ("folders") in the
@@ -783,7 +820,7 @@ matches what was stored with the backup, so an unchanged blob costs one listing 
 and a changed one is re-uploaded. The `backup_azure_s3.BackupAzureToS3` class is
 different: a standalone rclone-compatible mirror that bypasses this pipeline.
 
-**Configure S3 folder backups**
+## Configure S3 folder backups
 
 settings.py
 
@@ -795,7 +832,7 @@ settings.py
                               ('S3-source-folder2', 'google-drive-folder2')
             ]
             
-**Configure cleaning of old datatabase backups**
+## Configure cleaning of old datatabase backups
 
 settings.py
 
@@ -811,7 +848,7 @@ not kept by some entry is deleted after each backup. On an S3-compatible destina
 deleting instead, and the application never needs delete permission.
 
              
-**Schedule backup with celery beat**
+## Schedule backup with celery beat
 
     CELERY_BEAT_SCHEDULE = {
         'backup': {
@@ -821,7 +858,7 @@ deleting instead, and the application never needs delete permission.
     }
             
 
-**Checking that the backups are current**
+## Checking that the backups are current
 
 Error tracking only tells you about a backup that ran and *failed*. A celery beat that has
 stopped, or a worker that never picks the task up, raises nothing anywhere - so the package
@@ -860,3 +897,28 @@ read-only in the Django admin for projects on the basic UI. A dump smaller than 
 is flagged, and with `BACKUP_DB_TIERS` the daily and monthly copies must be there by
 `promotion_deadline`. The defaults are in `cloud_backup.config.DEFAULT_STATUS`; override
 them for every config with `BACKUP_STATUS = {...}` or per config with a `'status': {...}` key.
+
+## Migrating from django-gdrive-backup
+
+This package was previously published as `django-gdrive-backup`. The rename is a breaking
+release; upgrading requires the following changes in your project:
+
+- Install `django-cloud-backup` (and its extras, e.g. `django-cloud-backup[s3]`) instead of
+  `django-gdrive-backup`
+- `INSTALLED_APPS`: `'gdrive_backup'` → `'cloud_backup'`
+- urls.py: `include('gdrive_backup.urls')` → `include('cloud_backup.urls')`, and any
+  reverses/`{% url %}` tags use the `cloud_backup:` namespace instead of `gdrive_backup:`
+- Celery beat schedules: task names are now `cloud_backup.tasks.*`
+  (e.g. `cloud_backup.tasks.backup`)
+- Settings renamed: `BACKUP_GDRIVE_DIR` → `BACKUP_ROOT`, `BACKUP_GDRIVE_DB` → `BACKUP_DB_DIR`
+  (they apply to every destination backend, not just Google Drive). `BACKUP_TEAM_DRIVE` is
+  unchanged.
+- Removed legacy method aliases `backup_db_gdrive`, `restore_gdrive_db` and
+  `restore_gdrive_folder` - use `backup_db_to_storage`, `restore_db_from_storage` and
+  `restore_folder`
+- Client-side encryption: the file format constants changed with the rename, so files
+  encrypted by pre-release versions of the encryption feature cannot be read. No published
+  release included encryption, so this affects no production backups.
+
+Backups already in your storage destination are unaffected - folder layout and metadata
+are unchanged, and existing backups restore as before.

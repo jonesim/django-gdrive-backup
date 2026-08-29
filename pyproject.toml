@@ -18,8 +18,23 @@ dependencies = [
     "google-client-helper>=0.0.4",
     "requests",
 ]
+keywords = [
+    "django", "backup", "postgres", "postgresql", "ransomware", "immutable",
+    "object-lock", "worm", "s3", "backblaze", "b2", "cloudflare-r2", "azure",
+    "google-drive", "disaster-recovery",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
     "Programming Language :: Python :: 3",
+    "Topic :: Database",
+    "Topic :: Security",
+    "Topic :: System :: Archiving :: Backup",
+    "Topic :: System :: Systems Administration",
     "Operating System :: OS Independent",
 ]
 
@@ -30,6 +45,10 @@ encryption = ["cryptography"]
 
 [project.urls]
 Homepage = "https://github.com/jonesim/django-cloud-backup"
+Documentation = "https://github.com/jonesim/django-cloud-backup#readme"
+Changelog = "https://github.com/jonesim/django-cloud-backup/releases"
+Issues = "https://github.com/jonesim/django-cloud-backup/issues"
+Source = "https://github.com/jonesim/django-cloud-backup"
 
 [tool.setuptools.packages.find]
 include = ["cloud_backup", "cloud_backup.*"]
