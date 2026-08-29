@@ -789,3 +789,37 @@ deleting instead, and the application never needs delete permission.
         }
     }
             
+
+**Checking that the backups are current**
+
+Error tracking only tells you about a backup that ran and *failed*. A celery beat that has
+stopped, or a worker that never picks the task up, raises nothing anywhere - so the package
+answers the positive question itself. Every run of `backup`, `promote_db_tiers` and
+`extend_retention` is recorded in the database (`BackupRun`; rows are pruned after
+`BACKUP_RUN_HISTORY_DAYS`, default 90), and the status check lists what is actually at each
+destination and grades it against your beat schedule:
+
+    python manage.py backup_status              # every config; exit code 1 if anything is not OK
+    python manage.py backup_status --json
+
+    OK       database: Latest database dump   Sat 29 Aug 09:50 (27 min ago), 285.8 MiB  [older than the 09:50 run]
+    OK       database: Dump size vs previous  285.8 MiB vs 285.8 MiB (100%)  [< 80% of previous]
+    OK       database: Latest daily copy      Fri 28 Aug, 285.8 MiB  [before Fri 28 Aug]
+    OK       database: Latest monthly copy    Jul 2026, 280.1 MiB  [before Jul 2026]
+    OK       database: Backup run             succeeded Sat 29 Aug 09:51 (26 min ago)  [older than the 09:50 run]
+    OK       database: Tier promotion run     succeeded Sat 29 Aug 06:00 (4 h 17 min ago)  [older than the 06:00 run]
+    OK       files: Destination reachable     unity-backup is accessible  [not accessible]
+    OK       files: Backup run                succeeded Sat 29 Aug 01:31 (8 h 46 min ago)  [older than the 01:30 run]
+
+The same rows are served as json at `backup/status/` (`?config=<name>` to limit it,
+`?refresh=1` to bypass the five-minute cache) for a monitoring agent to read. The view
+only admits a superuser or the backup permission; subclass `cloud_backup.views
+.BackupStatusView`, override `has_permission(request)` to accept your monitor's credential,
+and pass it as `backup_urlpatterns(status_view=...)`.
+
+Rows are graded against the `crontab` entries in `CELERY_BEAT_SCHEDULE` for the config
+(a run is late once `grace_minutes` past its slot), or by plain age (`max_age_hours`) on a
+server where the task is not scheduled. A dump smaller than `size_drop` of the one before it
+is flagged, and with `BACKUP_DB_TIERS` the daily and monthly copies must be there by
+`promotion_deadline`. The defaults are in `cloud_backup.config.DEFAULT_STATUS`; override
+them for every config with `BACKUP_STATUS = {...}` or per config with a `'status': {...}` key.
