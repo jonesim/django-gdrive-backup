@@ -1,0 +1,377 @@
+"""Are the backups current? A positive answer, for monitoring.
+
+Error tracking only reports a backup task that *fails*. A celery-beat that has stopped, a
+worker that never picked the task up, or a task that silently wrote nothing raise no error
+at all, so this module lists what is actually at each destination - the newest dump in
+each tier, and the last recorded run of each task (models.BackupRun) - and grades it
+against the CELERY_BEAT_SCHEDULE in settings, or against a plain maximum age when a
+task is not scheduled here (a staging server, local development).
+
+Used by views.BackupStatusView (json for a monitoring agent to read), the backup_status
+management command, and anything else that wants ``collect()``. Each check is a row:
+
+    {'metric': 'Latest database dump', 'now': 'Sat 29 Aug 09:50 (27 min ago), 285.8 MiB',
+     'alert_at': 'older than the 09:50 run', 'status': 'OK', 'ok': True, ...raw values...}
+
+Thresholds come from the config's ``status`` options (config.DEFAULT_STATUS). Times are
+the host's local clock (naive when USE_TZ is off, aware otherwise); the dump names carry
+the clock of the worker that wrote them, so ask the instance that runs the backups.
+"""
+import datetime
+import logging
+import re
+
+from django.conf import settings
+from django.core.cache import cache
+from django.utils import timezone
+
+from .config import DEFAULT_CONFIG, config_names, get_config
+from .db_tiers import DAILY, MONTHLY, hourly_dir, parse_daily, parse_dump
+from .models import BackupRun
+from .runs import history_days, latest_run
+
+logger = logging.getLogger(__name__)
+
+CACHE_KEY = 'cloud_backup_status'
+CACHE_TIMEOUT = 60 * 5      # a status read costs a few requests to the destination
+
+TASKS = {BackupRun.BACKUP: 'cloud_backup.tasks.backup',
+         BackupRun.PROMOTE: 'cloud_backup.tasks.promote_db_tiers',
+         BackupRun.EXTEND_RETENTION: 'cloud_backup.tasks.extend_retention'}
+RUN_METRICS = {BackupRun.BACKUP: 'Backup run', BackupRun.PROMOTE: 'Tier promotion run',
+               BackupRun.EXTEND_RETENTION: 'Retention extension run'}
+
+OK = 'OK'
+STALE = 'STALE'
+MISSING = 'MISSING'
+FAILED = 'FAILED'
+RUNNING = 'RUNNING'
+UNKNOWN = 'UNKNOWN'
+
+MONTHLY_RE = re.compile(r'_(?P<month>\d{4}-\d{2})\.[A-Za-z0-9.]+$')
+
+
+def check(metric, now, alert_at, status, **detail):
+    """One row: what was measured, the threshold, and the verdict."""
+    return {'metric': metric, 'now': now, 'alert_at': alert_at, 'status': status,
+            'ok': status == OK, **detail}
+
+
+def unknown(metric, error):
+    logger.exception('Backup status: %s could not be checked', metric)
+    return check(metric, f'could not check - {type(error).__name__}: {error}', '', UNKNOWN)
+
+
+# ----------------------------------------------------------------------------------------
+# Clocks
+
+def now_local():
+    now = timezone.now()
+    return timezone.localtime(now) if timezone.is_aware(now) else now
+
+
+def local(when):
+    """A datetime in the same flavour as now_local(): dump names and the legacy storage
+    timestamps are naive local, BackupRun rows follow USE_TZ."""
+    if when is None:
+        return None
+    if settings.USE_TZ:
+        return timezone.make_aware(when) if timezone.is_naive(when) else timezone.localtime(when)
+    return timezone.localtime(when).replace(tzinfo=None) if timezone.is_aware(when) else when
+
+
+def at(day, time):
+    return local(datetime.datetime.combine(day, time))
+
+
+# ----------------------------------------------------------------------------------------
+# The beat schedule
+
+def default_config_name():
+    """The config a beat entry without a config kwarg runs - get_config(None)'s choice."""
+    names = config_names()
+    if DEFAULT_CONFIG in names:
+        return DEFAULT_CONFIG
+    return names[0] if len(names) == 1 else None
+
+
+def schedule_slots(kind, config_name):
+    """Sorted (hour, minute) slots the beat schedule fires the task at for this config,
+    or None when it is not scheduled here."""
+    task = TASKS[kind]
+    for entry in (getattr(settings, 'CELERY_BEAT_SCHEDULE', None) or {}).values():
+        if entry.get('task') != task:
+            continue
+        if ((entry.get('kwargs') or {}).get('config') or default_config_name()) != config_name:
+            continue
+        crontab = entry.get('schedule')
+        hours, minutes = getattr(crontab, 'hour', None), getattr(crontab, 'minute', None)
+        if hours is None or minutes is None:
+            return None     # an interval schedule - graded by age instead
+        return sorted((h, m) for h in hours for m in minutes)
+    return None
+
+
+def latest_due_slot(now, slots, grace):
+    """The most recent scheduled time whose run should have finished by now, or None
+    when no slot has come due yet."""
+    due = []
+    for days_back in (0, 1):
+        day = now.date() - datetime.timedelta(days=days_back)
+        for hour, minute in slots:
+            slot = at(day, datetime.time(hour, minute))
+            if slot + grace <= now:
+                due.append(slot)
+    return max(due) if due else None
+
+
+def grade_time(now, when, slots, options):
+    """(status, alert_at text) for something that should be as new as the last scheduled
+    run - or, with no schedule, no older than max_age_hours."""
+    if slots:
+        due = latest_due_slot(now, slots, datetime.timedelta(minutes=options['grace_minutes']))
+        alert_at = f'older than the {due:%H:%M} run' if due else 'no run due yet'
+        return (OK if due is None or (when is not None and when >= due) else STALE), alert_at
+    max_age = datetime.timedelta(hours=options['max_age_hours'])
+    alert_at = f'older than {options["max_age_hours"]} h (no beat schedule here)'
+    return (OK if when is not None and now - when <= max_age else STALE), alert_at
+
+
+# ----------------------------------------------------------------------------------------
+# Formatting
+
+def fmt(when):
+    return when.strftime('%a %d %b %H:%M') if when else '-'
+
+
+def fmt_age(now, when):
+    if when is None:
+        return '-'
+    minutes = int((now - when).total_seconds() // 60)
+    if minutes < 60:
+        return f'{minutes} min ago'
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f'{hours} h {minutes:02d} min ago'
+    return f'{hours // 24} days ago'
+
+
+def fmt_size(size):
+    if size is None:
+        return '-'
+    for unit in ('B', 'KiB', 'MiB', 'GiB'):
+        if size < 1024 or unit == 'GiB':
+            return f'{size:.0f} {unit}' if unit == 'B' else f'{size:.1f} {unit}'
+        size /= 1024
+
+
+# ----------------------------------------------------------------------------------------
+# What is at the destination
+
+def newest_dumps(backup, today):
+    """Database dumps newest first, as (time taken, size, key). Tiered layouts list
+    today's and yesterday's hourly folders - enough for the newest dump and the one
+    before it, even for the first run of the day; the flat legacy layout is listed whole."""
+    storage = backup.storage
+    db = backup.get_backup_db()
+    dumps = []
+    if backup.config.db_tiers:
+        for days_back in (0, 1):
+            folder = storage.ensure_folder(hourly_dir(today - datetime.timedelta(days=days_back)),
+                                           parent=db.base_backup_dir)
+            for f in storage.list_files(folder):
+                parsed = parse_dump(f['name'])
+                if parsed:
+                    dumps.append((local(parsed[1]), f['size'], f['id']))
+    else:
+        for f in db.get_db_backup_files():
+            parsed = parse_dump(f['name'])
+            dumps.append((local(parsed[1] if parsed else f['created']), f['size'], f['id']))
+    return sorted(dumps, reverse=True)
+
+
+def promoted_copies(backup, tier):
+    """Every copy in the daily or monthly tier as (period, size, key), oldest first - a
+    date for daily, the first of the month for monthly."""
+    storage = backup.storage
+    folder = storage.ensure_folder(tier, parent=storage.ensure_folder(backup.config.db_dir))
+    found = []
+    for f in storage.list_files(folder):
+        parsed = parse_daily(f['name'])
+        if parsed:
+            found.append((parsed[1], f['size'], f['id']))
+            continue
+        match = MONTHLY_RE.search(f['name'])
+        if match:
+            found.append((datetime.date.fromisoformat(match.group('month') + '-01'), f['size'], f['id']))
+    return sorted(found)
+
+
+def previous_month(day):
+    return (day.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
+
+
+def next_month(day):
+    return (day.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+
+
+def promotion_deadline(options):
+    return datetime.time.fromisoformat(options['promotion_deadline'])
+
+
+# ----------------------------------------------------------------------------------------
+# The checks
+
+def dump_checks(now, dumps, slots, options):
+    if not dumps:
+        return [check('Latest database dump', 'none found', 'missing', MISSING)]
+    taken, size, key = dumps[0]
+    status, alert_at = grade_time(now, taken, slots, options)
+    checks = [check('Latest database dump', f'{fmt(taken)} ({fmt_age(now, taken)}), {fmt_size(size)}',
+                    alert_at, status, taken=taken.isoformat(), size=size, key=key)]
+    if len(dumps) > 1:
+        previous_size = dumps[1][1]
+        ratio = size / previous_size if previous_size else None
+        checks.append(check('Dump size vs previous', f'{fmt_size(size)} vs {fmt_size(previous_size)}'
+                            + (f' ({ratio:.0%})' if ratio is not None else ''),
+                            f'< {options["size_drop"]:.0%} of previous',
+                            OK if ratio is None or ratio >= options['size_drop'] else FAILED,
+                            previous_size=previous_size, previous_key=dumps[1][2]))
+    return checks
+
+
+def daily_check(now, newest, options):
+    if newest is None:
+        return check('Latest daily copy', 'none', 'missing', MISSING)
+    day, size, key = newest
+    expected = now.date() - datetime.timedelta(days=1 if now.time() >= promotion_deadline(options) else 2)
+    return check('Latest daily copy', f'{day:%a %d %b}, {fmt_size(size)}', f'before {expected:%a %d %b}',
+                 OK if day >= expected else STALE, day=day.isoformat(), size=size, key=key)
+
+
+def monthly_check(now, newest, options, oldest_daily=None):
+    """oldest_daily: the day the daily tier starts, so a destination too young to have
+    seen a month end is not reported as missing its monthly copy."""
+    expected = previous_month(now.date())
+    if now.date().day == 1 and now.time() < promotion_deadline(options):
+        expected = previous_month(expected)
+    if newest is None:
+        if oldest_daily and oldest_daily >= next_month(expected):
+            return check('Latest monthly copy', f'none yet - daily copies start {oldest_daily:%d %b %Y}',
+                         f'first due 1 {next_month(oldest_daily):%b %Y}', OK)
+        return check('Latest monthly copy', 'none', 'missing', MISSING)
+    month, size, key = newest
+    return check('Latest monthly copy', f'{month:%b %Y}, {fmt_size(size)}', f'before {expected:%b %Y}',
+                 OK if month >= expected else STALE, month=month.strftime('%Y-%m'), size=size, key=key)
+
+
+def destination_check(backup):
+    state = backup.storage.destination_status(backup.config.root)
+    return check('Destination reachable', state.get('detail') or state.get('status', ''), 'not accessible',
+                 OK if state.get('state') == 'ok' else FAILED)
+
+
+def run_check(now, kind, run, slots, options):
+    metric = RUN_METRICS[kind]
+    if run is None:
+        return check(metric, f'no run recorded in the last {options.get("history_days", history_days())} days',
+                     'missing', MISSING)
+    detail = {'run_id': run.pk, 'run_status': run.status, 'started': local(run.started).isoformat(),
+              'finished': local(run.finished).isoformat() if run.finished else None, 'detail': run.detail}
+    started, finished = local(run.started), local(run.finished)
+    if run.status == BackupRun.FAILURE:
+        return check(metric, f'FAILED {fmt(finished)} ({fmt_age(now, finished)}): {run.error[:200]}',
+                     'any failure', FAILED, **detail)
+    if run.status == BackupRun.RUNNING:
+        stuck = now - started > datetime.timedelta(hours=options['stuck_hours'])
+        return check(metric, f'running since {fmt(started)} ({fmt_age(now, started)})',
+                     f'running for more than {options["stuck_hours"]} h', FAILED if stuck else RUNNING, **detail)
+    status, alert_at = grade_time(now, finished, slots, options)
+    return check(metric, f'succeeded {fmt(finished)} ({fmt_age(now, finished)})', alert_at, status, **detail)
+
+
+def config_checks(backup, now):
+    """Every check for one destination. A collector that blows up contributes an UNKNOWN
+    row rather than taking the others with it - the caller must still get an answer when
+    the destination is unreachable."""
+    config = backup.config
+    options = config.status
+    checks = []
+    if config.include_db:
+        try:
+            checks += dump_checks(now, newest_dumps(backup, now.date()), schedule_slots(BackupRun.BACKUP, config.name),
+                                  options)
+            if config.db_tiers:
+                daily = promoted_copies(backup, DAILY)
+                monthly = promoted_copies(backup, MONTHLY)
+                checks.append(daily_check(now, daily[-1] if daily else None, options))
+                checks.append(monthly_check(now, monthly[-1] if monthly else None, options,
+                                            daily[0][0] if daily else None))
+        except Exception as e:  # noqa: BLE001
+            checks.append(unknown('Database dumps', e))
+    if config.file_sources or config.s3_dirs or not config.include_db:
+        # a listing above already proved a database destination reachable
+        try:
+            checks.append(destination_check(backup))
+        except Exception as e:  # noqa: BLE001
+            checks.append(unknown('Destination reachable', e))
+    if config.restore_only:
+        return checks    # nothing runs against a restore-only destination from here
+    kinds = [BackupRun.BACKUP]
+    if config.db_tiers:
+        kinds.append(BackupRun.PROMOTE)
+    if (config.storage_settings.get('lock') or {}).get('min_days'):
+        kinds.append(BackupRun.EXTEND_RETENTION)
+    for kind in kinds:
+        try:
+            checks.append(run_check(now, kind, latest_run(config.name, kind), schedule_slots(kind, config.name),
+                                    options))
+        except Exception as e:  # noqa: BLE001
+            checks.append(unknown(RUN_METRICS[kind], e))
+    return checks
+
+
+def backup_for(name):
+    from .backup import Backup
+    return Backup(config=name)
+
+
+def collect(names=None, now=None):
+    """Every check for every configured destination (or just `names`), ready to
+    serialise. `checks` is the flat list a monitor reads, metric names prefixed with the
+    config name when there is more than one; `configs` has the same rows per destination."""
+    now = now or now_local()
+    names = list(names) if names else config_names()
+    configs, checks, buckets = {}, [], {}
+    for name in names:
+        try:
+            backup = backup_for(name)
+            storage = backup.config.storage_settings
+            buckets[name] = storage.get('bucket') or storage.get('container') or storage.get('backend', '')
+            rows = config_checks(backup, now)
+        except Exception as e:  # noqa: BLE001 - a misconfigured destination is a row, not a crash
+            rows = [unknown(f'{name} configuration', e)]
+        configs[name] = {'destination': buckets.get(name, ''), 'checks': rows,
+                         'ok': all(r['ok'] for r in rows)}
+        prefix = f'{name}: ' if len(names) > 1 else ''
+        checks += [dict(r, metric=prefix + r['metric']) for r in rows]
+    problems = [c['metric'] for c in checks if not c['ok']]
+    return {'generated': now.replace(microsecond=0).isoformat(),
+            'ok': not problems,
+            'problems': problems,
+            'buckets': buckets,
+            'configs': configs,
+            'checks': checks}
+
+
+def get_backup_status(names=None, refresh=False):
+    """collect(), cached for CACHE_TIMEOUT so a monitor polling the endpoint does not
+    list the destination every time."""
+    key = f'{CACHE_KEY}:{",".join(names) if names else "*"}'
+    if not refresh:
+        status = cache.get(key)
+        if status is not None:
+            return status
+    status = collect(names)
+    cache.set(key, status, CACHE_TIMEOUT)
+    return status
