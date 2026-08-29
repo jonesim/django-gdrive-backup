@@ -153,6 +153,13 @@ class BackupStorage:
         exist but cannot be read."""
         return None
 
+    def list_versions(self, prefix):
+        """Every object version and delete marker under a key prefix, as
+        {'key', 'version_id', 'modified' (naive local), 'size', 'is_latest', 'marker'} -
+        what the status check's version audit reads. None where the backend has no
+        versions; raises where they exist but cannot be listed."""
+        return None
+
     def versioned(self):
         """Whether the destination keeps previous versions of overwritten and deleted
         objects, meaning a plain delete only hides the current one. False where the

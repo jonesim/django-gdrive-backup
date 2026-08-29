@@ -13,8 +13,9 @@ from cloud_backup import status as st
 from cloud_backup.config import DEFAULT_STATUS
 from cloud_backup.models import BackupRun
 from cloud_backup.runs import record_run
-from cloud_backup.status import (FAILED, MISSING, OK, RUNNING, STALE, UNKNOWN, Schedule, collect, daily_check,
-                                 dump_checks, latest_due_slot, monthly_check, run_check, schedule_slots)
+from cloud_backup.status import (FAILED, MISSING, OK, RUNNING, STALE, UNKNOWN, Schedule, audit_versions, collect,
+                                 daily_check, dump_checks, latest_due_slot, monthly_check, run_check,
+                                 schedule_slots)
 from cloud_backup.views import BackupStatusView
 
 SCHEDULE = {
@@ -192,6 +193,9 @@ class FakeStorage:
     def destination_status(self, root=None):
         return {'state': 'ok', 'detail': 'bucket is accessible'}
 
+    def list_versions(self, prefix):
+        return None
+
 
 HEALTHY_BUCKET = {
     'django_backup/db/hourly/2026/08/27/db_2026_08_27_23_50_03.dump': 1_000_000,
@@ -211,6 +215,56 @@ def fake_backups(objects):
         backup._storage = FakeStorage(objects if name == 'database' else {})
         return backup
     return make
+
+
+def entry(key, modified, marker=False):
+    """A storage.list_versions() entry."""
+    return {'key': key, 'version_id': 'v', 'modified': modified, 'size': None if marker else 1, 'marker': marker,
+            'is_latest': False}
+
+
+class VersionAuditTest(SimpleTestCase):
+    EXPIRE = {'hourly': 15, 'daily': 91, 'monthly': None}
+    HOURLY = 'django_backup/db/hourly/2026/08/10/db_2026_08_10_09_50_00.dump'
+    MONTHLY = 'django_backup/db/monthly/db_2026-07.dump'
+
+    def test_expiry_hides_are_explained(self):
+        # hidden 15 days after upload - the lifecycle rule, or the app's prune
+        entries = [entry(self.HOURLY, datetime.datetime(2026, 8, 10, 9, 50)),
+                   entry(self.HOURLY, datetime.datetime(2026, 8, 25, 3, 0), marker=True)]
+        self.assertEqual(audit_versions(entries, self.EXPIRE), ([], 1))
+        # prune works in whole days, so a day early is still expiry
+        entries[1] = entry(self.HOURLY, datetime.datetime(2026, 8, 24, 10, 0), marker=True)
+        self.assertEqual(audit_versions(entries, self.EXPIRE), ([], 1))
+
+    def test_young_hide_is_not(self):
+        entries = [entry(self.HOURLY, datetime.datetime(2026, 8, 10, 9, 50)),
+                   entry(self.HOURLY, datetime.datetime(2026, 8, 12, 9, 50), marker=True)]
+        unexplained, explained = audit_versions(entries, self.EXPIRE)
+        self.assertEqual((explained, [u['kind'] for u in unexplained]), (0, ['hidden']))
+        self.assertEqual(unexplained[0]['age'], datetime.timedelta(days=2))
+
+    def test_monthly_never_expires(self):
+        entries = [entry(self.MONTHLY, datetime.datetime(2026, 8, 1, 6, 0)),
+                   entry(self.MONTHLY, datetime.datetime(2027, 8, 1, 6, 0), marker=True)]
+        self.assertEqual([u['kind'] for u in audit_versions(entries, self.EXPIRE)[0]], ['hidden'])
+        # even once the version is purged, a marker on the archive is evidence
+        lone = [entry(self.MONTHLY, datetime.datetime(2027, 8, 1, 6, 0), marker=True)]
+        self.assertEqual([u['kind'] for u in audit_versions(lone, self.EXPIRE)[0]], ['purged'])
+
+    def test_overwrite(self):
+        entries = [entry(self.HOURLY, datetime.datetime(2026, 8, 10, 9, 50)),
+                   entry(self.HOURLY, datetime.datetime(2026, 8, 10, 11, 0))]
+        self.assertEqual([u['kind'] for u in audit_versions(entries, self.EXPIRE)[0]], ['overwritten'])
+
+    def test_lone_marker_dated_from_the_name(self):
+        # the version is already purged, but the name says the dump was 2 days old when hidden
+        entries = [entry(self.HOURLY, datetime.datetime(2026, 8, 12, 9, 50), marker=True)]
+        unexplained, _ = audit_versions(entries, self.EXPIRE)
+        self.assertEqual((unexplained[0]['kind'], unexplained[0]['age']), ('purged', datetime.timedelta(days=2)))
+        # an old lone marker is expiry that has run its course
+        old = [entry(self.HOURLY, datetime.datetime(2026, 8, 26, 3, 0), marker=True)]
+        self.assertEqual(audit_versions(old, self.EXPIRE), ([], 1))
 
 
 def run(config, kind, status=BackupRun.SUCCESS, finished=None, started=None, error=''):
@@ -298,6 +352,29 @@ class CollectTest(SimpleTestCase):
 
     def test_json_serialisable(self):
         json.dumps(self.collect())
+
+    def test_version_audit_row(self):
+        class VersionedStorage(FakeStorage):
+            def list_versions(self, prefix):
+                return [entry('django_backup/db/hourly/2026/08/28/db_2026_08_28_07_50_02.dump',
+                              datetime.datetime(2026, 8, 28, 7, 50)),
+                        entry('django_backup/db/hourly/2026/08/28/db_2026_08_28_07_50_02.dump',
+                              datetime.datetime(2026, 8, 28, 10, 0), marker=True)]
+
+        def make(name):
+            from cloud_backup.backup import Backup
+            backup = Backup(config=name)
+            backup._storage = VersionedStorage(HEALTHY_BUCKET if name == 'database' else {})
+            return backup
+        with patch.object(st, 'backup_for', side_effect=make), patch.object(st, 'latest_run', return_value=None):
+            status = collect(['database'], now=NOW)
+        row = [c for c in status['checks'] if c['metric'] == 'Version audit'][0]
+        self.assertEqual(row['status'], FAILED)
+        # purge_days defaults to 1: the dump hidden at 10:00 is gone a day later
+        self.assertIn('recoverable until Sat 29 Aug 10:00', row['now'])
+        self.assertIn('db_2026_08_28_07_50_02.dump (hidden, 2 h old)', row['now'])
+        self.assertEqual(row['unexplained'][0]['kind'], 'hidden')
+        json.dumps(status)
 
     def test_view_permission_hook(self):
         status = self.collect()

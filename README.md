@@ -305,6 +305,16 @@ about the same storage and buys a week to notice:
 The setup page generates the rules with that clause and flags a real rule that purges
 sooner.
 
+A deleted dump is loud - the status check sees it missing. An *overwritten* one is not:
+the name, date and size still look right, and the real version sits hidden underneath
+until the purge. So for tiered configs the status check also audits the bucket's
+versions: dumps get unique names and are only ever hidden by expiry once they are
+`expire_days` old, so a dump hidden younger than that, anything hidden under `monthly/`,
+or a key holding two real versions is someone else's doing. The `Version audit` row
+names them, says whether they are `hidden` (still recoverable), `overwritten` or already
+`purged`, and gives the deadline the purge clock sets - run `backup_status` more often
+than `purge_days`.
+
 **Explicit deletes with a locked archive**
 
 Lifecycle rules are only as durable as the bucket configuration - anyone with
@@ -818,6 +828,7 @@ destination and grades it against your beat schedule:
     OK       database: Dump size vs previous  285.8 MiB vs 285.8 MiB (100%)  [< 80% of previous]
     OK       database: Latest daily copy      Fri 28 Aug, 285.8 MiB  [before Fri 28 Aug]
     OK       database: Latest monthly copy    Jul 2026, 280.1 MiB  [before Jul 2026]
+    OK       database: Version audit          nothing unexplained - 9 hidden by expiry, 214 entries listed  [any hidden version or overwrite the retention policy does not explain]
     OK       database: Backup run             succeeded Sat 29 Aug 09:51 (26 min ago)  [older than the 09:50 run]
     OK       database: Tier promotion run     succeeded Sat 29 Aug 06:00 (4 h 17 min ago)  [older than the 06:00 run]
     OK       files: Destination reachable     unity-backup is accessible  [not accessible]

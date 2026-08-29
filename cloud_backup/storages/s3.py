@@ -347,6 +347,22 @@ class S3Storage(BackupStorage):
             target['delete_markers'] = target['delete_markers'] or rule['delete_markers']
         return list(merged.values())
 
+    def list_versions(self, prefix):
+        """Every object version and delete marker under a prefix - see BackupStorage. One
+        request per 1000 entries; the db folder of a tiered config is a few hundred."""
+        entries = []
+        for page in self.s3.get_paginator('list_object_versions').paginate(Bucket=self.bucket, Prefix=prefix):
+            for version in page.get('Versions', []):
+                entries.append({'key': version['Key'], 'version_id': version.get('VersionId'),
+                                'modified': self.to_local_naive(version['LastModified']),
+                                'size': version.get('Size'), 'is_latest': version.get('IsLatest', False),
+                                'marker': False})
+            for marker in page.get('DeleteMarkers', []):
+                entries.append({'key': marker['Key'], 'version_id': marker.get('VersionId'),
+                                'modified': self.to_local_naive(marker['LastModified']),
+                                'size': None, 'is_latest': marker.get('IsLatest', False), 'marker': True})
+        return entries
+
     def versioned(self):
         """Whether the bucket keeps previous versions - B2 buckets seen through the S3
         API always report Enabled."""

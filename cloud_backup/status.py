@@ -26,7 +26,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from .config import DEFAULT_CONFIG, config_names, get_config
-from .db_tiers import DAILY, MONTHLY, hourly_dir, parse_daily, parse_dump
+from .db_tiers import DAILY, MONTHLY, TIER_DIRS, hourly_dir, parse_daily, parse_dump
 from .models import BackupRun
 from .runs import history_days, latest_run
 
@@ -246,6 +246,102 @@ def promotion_deadline(options):
 
 
 # ----------------------------------------------------------------------------------------
+# The version audit - is anything hidden that the retention policy did not hide?
+
+def tier_in_key(key):
+    for tier in TIER_DIRS:
+        if f'/{tier}/' in key:
+            return tier
+    return None
+
+
+def name_time(key):
+    """When the dump a key names was taken, from its name - what dates a delete marker
+    whose version has already been purged."""
+    name = key.rsplit('/', 1)[-1]
+    parsed = parse_dump(name)
+    if parsed:
+        return parsed[1]
+    parsed = parse_daily(name)
+    if parsed:
+        return datetime.datetime.combine(parsed[1], datetime.time())
+    match = MONTHLY_RE.search(name)
+    return datetime.datetime.fromisoformat(match.group('month') + '-01') if match else None
+
+
+def audit_versions(entries, expire_days):
+    """(unexplained, explained): what the retention policy does not account for among a
+    db folder's versions and delete markers. Dumps get unique names and are only ever
+    hidden by expiry - the bucket's rule or the app's prune - once they are expire_days
+    old, so a dump hidden younger than that, anything hidden in a tier that never
+    expires, and a key holding two real versions (an overwrite) are someone else's
+    doing. Each finding is {'key', 'kind': 'hidden'|'overwritten'|'purged', 'at', 'age'}:
+    'purged' is a young dump whose hidden version is already gone - evidence, no longer
+    recoverable."""
+    by_key = {}
+    for entry in entries:
+        group = by_key.setdefault(entry['key'], {'versions': [], 'markers': []})
+        group['markers' if entry['marker'] else 'versions'].append(entry)
+    unexplained, explained = [], 0
+    for key, group in by_key.items():
+        versions = sorted(group['versions'], key=lambda v: v['modified'])
+        if len(versions) > 1:
+            unexplained.append({'key': key, 'kind': 'overwritten', 'at': versions[-1]['modified'],
+                                'age': versions[-1]['modified'] - versions[0]['modified']})
+        tier = tier_in_key(key)
+        limit = expire_days.get(tier) if tier else None
+        for marker in group['markers']:
+            hidden = [v for v in versions if v['modified'] <= marker['modified']]
+            uploaded = hidden[-1]['modified'] if hidden else name_time(key)
+            if uploaded is None:
+                continue
+            age = marker['modified'] - uploaded
+            # prune works in whole days, so a legitimate hide can be a day early
+            if limit is not None and age >= datetime.timedelta(days=limit - 1):
+                explained += 1
+            else:
+                unexplained.append({'key': key, 'kind': 'hidden' if hidden else 'purged',
+                                    'at': marker['modified'], 'age': age})
+    return unexplained, explained
+
+
+def fmt_span(delta):
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 60:
+        return f'{minutes} min old'
+    if minutes < 48 * 60:
+        return f'{minutes // 60} h old'
+    return f'{minutes // (24 * 60)} days old'
+
+
+def versions_check(backup, now):
+    """The Version audit row, or None where the storage has no versions. Costs one
+    listing of the db folder including its hidden versions."""
+    config = backup.config
+    entries = backup.storage.list_versions(backup.get_backup_db().base_backup_dir['id'] + '/')
+    if entries is None:
+        return None
+    metric, alert_at = 'Version audit', 'any hidden version or overwrite the retention policy does not explain'
+    unexplained, explained = audit_versions(entries, config.db_tier_expire_days)
+    if not unexplained:
+        return check(metric, f'nothing unexplained - {explained} hidden by expiry, {len(entries)} entries listed',
+                     alert_at, OK, hidden_by_expiry=explained, entries=len(entries))
+    recoverable = [u for u in unexplained if u['kind'] != 'purged']
+    # the purge clock started when the dump was hidden; the earliest one sets the deadline
+    deadline = (local(min(u['at'] for u in recoverable)) + datetime.timedelta(days=config.db_tier_purge_days)
+                if recoverable else None)
+    listed = ', '.join(f"{u['key'].rsplit('/', 1)[-1]} ({u['kind']}, {fmt_span(u['age'])})" for u in unexplained[:4])
+    if len(unexplained) > 4:
+        listed += f', ... {len(unexplained) - 4} more'
+    return check(metric,
+                 f'{len(unexplained)} dump(s) hidden or overwritten that the retention policy does not explain'
+                 + (f' - recoverable until {fmt(deadline)}' if deadline else ' - already purged') + f': {listed}',
+                 alert_at, FAILED, recover_by=deadline.isoformat() if deadline else None,
+                 unexplained=[dict(u, at=local(u['at']).isoformat(), age=fmt_span(u['age'])) for u in unexplained],
+                 hidden_by_expiry=explained)
+
+
+# ----------------------------------------------------------------------------------------
 # The checks
 
 def dump_checks(now, dumps, schedule, options):
@@ -335,6 +431,15 @@ def config_checks(backup, now):
                                             daily[0][0] if daily else None))
         except Exception as e:  # noqa: BLE001
             checks.append(unknown('Database dumps', e))
+        if config.db_tiers:
+            # only for tiered configs: their retention is exact enough to say what a
+            # legitimate hide looks like, which BACKUP_DB_RETENTION's hourly pruning is not
+            try:
+                row = versions_check(backup, now)
+                if row:
+                    checks.append(row)
+            except Exception as e:  # noqa: BLE001
+                checks.append(unknown('Version audit', e))
     if config.file_sources or config.s3_dirs or not config.include_db:
         # a listing above already proved a database destination reachable
         try:
