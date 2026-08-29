@@ -170,7 +170,9 @@ class BackupStorage:
                                     rendered as its own column,
                           'action': 'fix'|'warn' on the rows that mean something has to be
                                     done, which is what sets the setup page's panel state.
-                                    Absent on rows that are context}
+                                    Absent on rows that are context,
+                          'badge': optional bootstrap colour overriding the one the status
+                                   text implies - a Disabled that is only a warning here}
         """
         return []
 

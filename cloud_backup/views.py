@@ -29,7 +29,7 @@ class BackupInfo(PermissionRequiredMixin, TemplateView):
             # (BACKUP_RESTORE_ONLY) shows the listing alone
             'restore_only': db.config.restore_only,
             'supports_trash': db.storage.supports_trash and not db.config.restore_only,
-            'protection': db.storage.protection_info(**db.tier_policy()),
+            'protection': db.protection_rows(),
             'files': db.get_db_backup_files(),
             'deleted_files': db.get_db_backup_files(deleted=True),
         }

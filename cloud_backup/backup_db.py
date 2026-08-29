@@ -8,8 +8,9 @@ import requests
 
 from .base_backup import BaseBackup
 from .compression import decompress
-from .db_tiers import (DAILY, DB_FILE_EXTENSIONS, DUMP_EXTENSION, HOURLY, LEGACY_STAMP,  # noqa: F401 re-export
-                       MONTHLY, TIER_DIRS, backup_time, hourly_dir, hourly_name, tier_of, tier_prefixes)
+from .db_tiers import (DAILY, DB_FILE_EXTENSIONS, DELETE_APP, DUMP_EXTENSION, HOURLY,  # noqa: F401 re-export
+                       LEGACY_STAMP, MONTHLY, TIER_DIRS, backup_time, hourly_dir, hourly_name, tier_of,
+                       tier_prefixes)
 from .encryption import decrypt_in_place, encrypt_file
 from .prune_backups import PruneBackups
 from .sql_functions import delete_table
@@ -117,9 +118,23 @@ class BackupDb(BaseBackup):
 
     def tier_policy(self):
         """The lifecycle-rule arguments for storage.protection_info() - where each tier
-        lives and how long it is meant to be kept."""
-        return {'tier_prefixes': self.tier_prefixes(),
-                'expire_days': self.config.db_tier_expire_days if self.config.db_tiers else None}
+        lives and how long it is meant to be kept. In app-delete mode the tiers are meant
+        to have no lifecycle rules, so measuring them against the rules would report every
+        tier as unprotected - no tier prefixes are passed, the same choice storage_setup
+        makes, and protection_rows() adds a Deletion row saying what does the deleting."""
+        if not self.config.db_tiers or self.config.db_tier_delete == DELETE_APP:
+            return {'tier_prefixes': None, 'expire_days': None}
+        return {'tier_prefixes': self.tier_prefixes(), 'expire_days': self.config.db_tier_expire_days}
+
+    def protection_rows(self):
+        """The backup page's protection table: storage.protection_info plus the rows
+        explained by the config rather than the destination."""
+        from .storage_setup import deletion_row
+        rows = self.storage.protection_info(**self.tier_policy())
+        row = deletion_row(self.config)
+        if row:
+            rows.append(row)
+        return rows
 
     def get_db_backup_files(self, deleted=False, metadata_filter=None):
         # the flat listing is delimited, so it picks up dumps written before tiering was

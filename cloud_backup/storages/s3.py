@@ -463,23 +463,32 @@ class S3Storage(BackupStorage):
         except ClientError as e:
             protection.append(self._protection_unknown('Bucket versioning', e, capability='readBuckets'))
         worm = 'Object Lock (WORM)'
+
+        def worm_disabled_row():
+            # versioning already keeps previous versions of overwritten and deleted
+            # objects, so a missing lock is then a gap rather than an emergency
+            if versioned:
+                return {'label': worm, 'status': 'Disabled', 'badge': 'warning',
+                        'detail': 'not enabled on this bucket - versioning still keeps previous versions'}
+            return {'label': worm, 'status': 'Disabled', 'detail': 'not enabled on this bucket'}
+
         try:
             config = self.s3.get_object_lock_configuration(Bucket=self.bucket)
             config = config.get('ObjectLockConfiguration', {})
             enabled = config.get('ObjectLockEnabled') == 'Enabled'
             retention = config.get('Rule', {}).get('DefaultRetention', {})
-            detail = ('objects may carry a retention date' if enabled
-                      else 'not enabled on this bucket')
-            if retention:
-                period = (f"{retention['Days']} days" if retention.get('Days')
-                          else f"{retention.get('Years')} years")
-                detail = f"bucket default: {retention.get('Mode', '').lower()} retention {period}"
-            protection.append({'label': worm, 'status': 'Enabled' if enabled else 'Disabled',
-                               'detail': detail})
+            if not enabled:
+                protection.append(worm_disabled_row())
+            else:
+                detail = 'objects may carry a retention date'
+                if retention:
+                    period = (f"{retention['Days']} days" if retention.get('Days')
+                              else f"{retention.get('Years')} years")
+                    detail = f"bucket default: {retention.get('Mode', '').lower()} retention {period}"
+                protection.append({'label': worm, 'status': 'Enabled', 'detail': detail})
         except ClientError as e:
             if 'ObjectLockConfigurationNotFound' in e.response.get('Error', {}).get('Code', ''):
-                protection.append({'label': worm, 'status': 'Disabled',
-                                   'detail': 'not enabled on this bucket'})
+                protection.append(worm_disabled_row())
             else:
                 protection.append(self._protection_unknown(worm, e, capability='readBucketRetentions'))
         if self.lock:

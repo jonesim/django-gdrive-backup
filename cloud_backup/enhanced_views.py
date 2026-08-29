@@ -49,7 +49,9 @@ def status_table(rows):
     html = ('<table class="table table-sm w-auto mb-0"><thead><tr><th>Check</th>'
             f'{folder_header}<th>Status</th><th>Detail</th></tr></thead><tbody>')
     for row in rows:
-        colour = BADGE_COLOURS.get(row['status'], 'secondary')
+        # a row may soften (or harden) its own badge - e.g. Object Lock off is only a
+        # warning when versioning already protects the bucket
+        colour = row.get('badge') or BADGE_COLOURS.get(row['status'], 'secondary')
         folder = (f'<td class="text-monospace text-nowrap">{escape(row.get("folder") or "")}</td>'
                   if folders else '')
         html += (f'<tr><td class="text-nowrap">{escape(row["label"])}</td>{folder}'
@@ -388,7 +390,7 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
             gb = 1024 * 1024 * 1024
             html += ' &mdash; {:.1f} GB Used of {:.1f} GB'.format(info['used'] / gb, info['limit'] / gb)
         html = f'<div class="mb-2">{html}</div>'
-        html += status_table(db.storage.protection_info(**db.tier_policy()))
+        html += status_table(db.protection_rows())
         return self.command_response('html', selector='#storage_info', html=html)
 
     def get_table_query(self, table, **kwargs):
