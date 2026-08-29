@@ -242,6 +242,9 @@ def b2_setup_commands(check, shell=None):
     if check['state'] != 'missing' and rules:
         note = ('b2 bucket update REPLACES the whole rule set - every rule the bucket should end up with '
                 'has to be on this one command line.')
+        if check.get('app_deletes'):
+            note += (' The rule only expires hidden versions, one day after the application deletes a '
+                     'dump - current dumps are never hidden or expired by the bucket.')
         if check['dropped_rules']:
             note += (' These existing rules are not included because they overlap the tier prefixes, which '
                      'B2 will not accept: ' + ', '.join(r['prefix'] or '(whole bucket)' for r in
@@ -308,12 +311,19 @@ def guidance(check):
     if check['wanted_rules']:
         lines.append('Create these expiry rules in your provider\'s console:')
         lines += [f"{rule['fileNamePrefix']} - expire after {rule['daysFromUploadingToHiding']} days"
+                  if rule['daysFromUploadingToHiding'] else
+                  f"{rule['fileNamePrefix']} - expire noncurrent versions "
+                  f"{rule['daysFromHidingToDeleting']} day(s) after deletion; current objects untouched"
                   for rule in check['wanted_rules']]
-        kept = [tier for tier, days in (check['expire_days'] or {}).items() if not days]
-        if kept:
-            lines.append(f"No rule for the {', '.join(kept)} tier(s) - kept indefinitely.")
-        lines.append('On a versioned bucket also expire the noncurrent versions, or the expired objects '
-                     'are kept and charged for.')
+        if check['app_deletes']:
+            lines.append('The application deletes the aged-out dumps itself - on a versioned bucket that '
+                         'only hides them, which is what this rule cleans up.')
+        else:
+            kept = [tier for tier, days in (check['expire_days'] or {}).items() if not days]
+            if kept:
+                lines.append(f"No rule for the {', '.join(kept)} tier(s) - kept indefinitely.")
+            lines.append('On a versioned bucket also expire the noncurrent versions, or the expired objects '
+                         'are kept and charged for.')
     return lines
 
 
@@ -483,10 +493,15 @@ def check_config(name, shell=None):
     if config.db_tiers and not config.restore_only:
         check['expire_days'] = config.db_tier_expire_days
         if config.db_tier_delete == DELETE_LIFECYCLE:
-            # with the application deleting there are no rules to create, and a rule would
-            # be a second thing deleting the same objects to a different schedule
             check['wanted_rules'] = b2_tier_rules(tier_prefixes(config.db_dir.strip('/')),
                                                   check['expire_days'])
+        elif any(check['expire_days'].values()):
+            # the application does the expiry deletes, so no per-tier rules - but on a
+            # versioned bucket those deletes only hide the dumps, so one noncurrent-only
+            # rule over the whole db folder (schema sub-folders included) expires the
+            # hidden versions without ever hiding a current dump. Dropped again below
+            # when the bucket turns out not to be versioned
+            check['wanted_rules'] = [b2_lifecycle_rule(f"{config.db_dir.strip('/')}/", None)]
     try:
         storage = get_storage(storage_settings)
     except Exception as e:  # noqa: BLE001 - bad credentials, missing SDK, unknown backend
@@ -519,10 +534,20 @@ def check_config(name, shell=None):
         check['rows'].append(promotion_row(storage, config))
         check['rows'] += [row for row in [lock_row(storage, config)] if row]
     if check['wanted_rules'] and status['state'] == 'ok':
-        # the schema rules first: they add tier prefixes of their own, and an existing rule
-        # that overlaps one of those has to be dropped rather than carried over
-        add_schema_rules(check, storage, config)
-        add_existing_rules(check, storage)
+        if check['app_deletes']:
+            # the one rule covers every prefix under the db folder, so no schema rules -
+            # and an unversioned bucket needs no rule at all, its deletes really delete
+            try:
+                if not storage.versioned():
+                    check['wanted_rules'] = []
+            except Exception:  # noqa: BLE001 - unreadable: keep the rule, B2 is always versioned
+                pass
+        else:
+            # the schema rules first: they add tier prefixes of their own, and an existing
+            # rule that overlaps one of those has to be dropped rather than carried over
+            add_schema_rules(check, storage, config)
+        if check['wanted_rules']:
+            add_existing_rules(check, storage)
     elif check['wanted_rules']:
         check['rules_unknown'] = True
     return finish_check(check)
