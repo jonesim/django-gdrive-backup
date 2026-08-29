@@ -29,6 +29,8 @@ from cloud_backup.backup import Backup
 from . import storage_setup
 from .backup_local_files import BackupLocal, local_backup_path
 from .config import FileSource, config_index, config_names, safe_config, selected_config_name
+from .models import BackupRun
+from .runs import history_days
 from .sql_functions import get_schemas, get_schema_tables, get_table_column_names, get_table_data
 from .storages.base import StorageFileNotFound
 from .tasks import ajax_backup
@@ -294,6 +296,8 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                                visible=len(config.file_sources) == 1),
                 self.page_item('cloud_backup:backup_files_root', 'Files',
                                visible=len(config.file_sources) > 1),
+                # a restore_only destination records no runs on this machine
+                self.page_item('cloud_backup:backup_runs', 'Run Log', visible=writable),
             )
 
     # noinspection PyAttributeOutsideInit
@@ -550,6 +554,9 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
             self.menus['buttons'].add_items(
                 (f'cloud_backup:confirm_backup,{config_slug}-include_db-False', 'Backup Files',
                  {'visible': writable and bool(config.file_sources or config.s3_dirs)}),
+                # a db-less config has no database page, so its run log is linked from here
+                self.page_item('cloud_backup:backup_runs', 'Run Log',
+                               visible=writable and not config.include_db),
             )
         else:
             self.menus['buttons'].add_items(
@@ -563,6 +570,9 @@ class BackupFilesBaseView(BackupContentMixin, TableBackup, PermissionRequiredMix
                  {'visible': writable and (len(config.file_sources) > 1 or bool(config.s3_dirs))}),
                 (f'cloud_backup:verify_files,{config_slug}-backup_dir-{self.backup_dir}',
                  'Verify All Files'),
+                # a db-less single-source config lands straight in here, skipping the root
+                self.page_item('cloud_backup:backup_runs', 'Run Log',
+                               visible=writable and not config.include_db),
             )
 
     def add_tables(self):
@@ -730,6 +740,68 @@ def setup_panel(check, copy_button=None, shell_buttons=''):
                      f'<pre class="bg-light border p-2 mb-0 flex-grow-1 text-wrap">'
                      f'{escape(command["command"])}</pre>{button}</div>')
     return html + '</div>'
+
+
+RUN_BADGES = {'success': 'success', 'failure': 'danger', 'running': 'info'}
+
+
+class BackupRunsBaseView(BackupContentMixin, BackupConfigMixin, AjaxHelpers, PermissionRequiredMixin,
+                         MenuMixin, DatatableView):
+    """Log of the recorded runs (models.BackupRun) for the selected destination - the
+    history the status check grades the latest row of. Pure database rows: never
+    resolves Backup() or contacts the storage, so the log is readable exactly when it
+    matters - while the destination or its config is broken."""
+
+    permission_required = 'access_admin'
+    content_template = 'cloud_backup/runs_content.html'
+    max_rows = 500
+
+    def setup_menu(self):
+        self.add_config_tabs()
+        self.add_menu('breadcrumbs', menu_type='breadcrumb').add_items(
+            (self.config_home_url(self.config_name), 'backup', {'link_type': MenuItem.HREF}),
+            self.page_item('cloud_backup:backup_runs', 'run log'),
+        )
+
+    def add_tables(self):
+        self.add_table('runs')
+
+    @staticmethod
+    def setup_runs(table):
+        table.add_columns('.id', DateTimeColumn(title='Started', field='started'),
+                          'kind', 'status', 'duration', 'detail', 'error')
+        # rows arrive newest first; the status column is HTML, which client-side
+        # ordering would sort by
+        table.table_options['ordering'] = False
+        table.table_options['stateSave'] = False
+
+    def get_table_query(self, table, **kwargs):
+        rows = []
+        for run in BackupRun.objects.filter(config=self.config_name)[:self.max_rows]:
+            detail = ', '.join(f'{k}: {json.dumps(v) if isinstance(v, (dict, list)) else v}'
+                               for k, v in (run.detail or {}).items())
+            rows.append({
+                'id': run.pk,
+                'started': run.started,
+                'kind': run.get_kind_display(),
+                'status': f'<span class="badge badge-{RUN_BADGES.get(run.status, "secondary")}">'
+                          f'{escape(run.get_status_display())}</span>',
+                'duration': run.duration_display(),
+                'detail': escape(detail),
+                'error': escape(run.error[:300]),
+            })
+        return rows
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['runs_summary'] = (f'Recorded backup runs for this server and destination - '
+                                   f'kept for {history_days()} days')
+        return context
+
+
+class BackupRunsView(BackupRunsBaseView):
+
+    template_name = 'cloud_backup/backup.html'
 
 
 class StorageSetupBaseView(BackupConfigMixin, BackupContentMixin, PermissionRequiredMixin, AjaxMenuTemplateView):

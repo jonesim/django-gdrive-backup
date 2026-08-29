@@ -820,7 +820,11 @@ and pass it as `backup_urlpatterns(status_view=...)`.
 Rows are graded against the `crontab` entries in `CELERY_BEAT_SCHEDULE` for the config
 (a run is late once `grace_minutes` past its slot, counting only the days the crontab
 fires - a `mon-fri` schedule is not stale over the weekend), or by plain age
-(`max_age_hours`) on a server where the task is not scheduled. A dump smaller than `size_drop` of the one before it
+(`max_age_hours`) on a server where the task is not scheduled.
+
+The run history behind those rows is browsable too: the enhanced UI has a Run Log page
+at `backup/runs/` (a button on each destination's page), and `BackupRun` is registered
+read-only in the Django admin for projects on the basic UI. A dump smaller than `size_drop` of the one before it
 is flagged, and with `BACKUP_DB_TIERS` the daily and monthly copies must be there by
 `promotion_deadline`. The defaults are in `cloud_backup.config.DEFAULT_STATUS`; override
 them for every config with `BACKUP_STATUS = {...}` or per config with a `'status': {...}` key.
