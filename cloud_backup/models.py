@@ -44,3 +44,14 @@ class BackupRun(models.Model):
         if self.finished is None:
             return None
         return (self.finished - self.started).total_seconds()
+
+    def duration_display(self):
+        if self.finished is None:
+            return ''
+        minutes, seconds = divmod(int(self.duration), 60)
+        if not minutes:
+            return f'{seconds} s'
+        hours, minutes = divmod(minutes, 60)
+        if not hours:
+            return f'{minutes} min {seconds:02d} s'
+        return f'{hours} h {minutes:02d} min'
