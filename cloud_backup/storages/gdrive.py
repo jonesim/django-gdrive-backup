@@ -15,6 +15,7 @@ class GDriveStorage(BackupStorage):
     """
 
     supports_trash = True
+    supports_empty_trash = True
 
     def __init__(self, credentials, shared_drive=None):
         self.drive = GoogleDrive(credentials, shared_drive=shared_drive)

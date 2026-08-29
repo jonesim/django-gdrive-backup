@@ -291,7 +291,8 @@ class BackupBaseView(BackupContentMixin, TableBackup, PermissionRequiredMixin, M
                 self.page_item('cloud_backup:schema_info', f'View {self.schemas[0][0]}', self.schemas[0][0],
                                visible=config.include_db and len(self.schemas) == 1),
                 (f'cloud_backup:confirm_empty_trash,{config_slug}', 'Empty Trash',
-                 {'css_classes': 'btn btn-warning', 'visible': writable and self.backup.storage.supports_trash}),
+                 {'css_classes': 'btn btn-warning',
+                  'visible': writable and self.backup.storage.supports_empty_trash}),
                 # with a single backup dir the root listing is a pointless extra
                 # click, so link straight into it
                 self.page_item('cloud_backup:backup_files', 'Files', 0,

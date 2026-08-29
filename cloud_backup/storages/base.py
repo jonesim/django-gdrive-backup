@@ -23,7 +23,11 @@ class BackupStorage:
     be passed back to the storage that created them. Path arguments use '/' separators.
     """
 
+    # list_files(deleted=True) and restore_deleted work: a real trash, or on a versioned
+    # bucket the hidden previous versions, which are the same thing from the outside
     supports_trash = False
+    # empty_trash purges it - only where the credential is meant to be able to delete
+    supports_empty_trash = False
     lock = {}  # object-lock config where the backend supports it (currently only s3)
 
     def lock_days(self, kind):
@@ -44,7 +48,9 @@ class BackupStorage:
         List files directly inside a folder as normalised dicts.
         :param folder: folder handle
         :param metadata_filter: dict of metadata key/values every returned file must match
-        :param deleted: list trashed files instead (backends without trash return [])
+        :param deleted: list trashed files instead - or on a versioned bucket the hidden
+                        previous versions under the folder, recursively (backends without
+                        either return [])
         :param include_metadata: guarantee 'metadata' is populated (may cost extra
                                  requests on backends that can't list metadata)
         """
@@ -116,10 +122,13 @@ class BackupStorage:
         raise NotImplementedError
 
     def restore_deleted(self, file_id):
+        """Bring a file listed by list_files(deleted=True) back, by the id that listing
+        gave it."""
         raise NotImplementedError('This storage backend does not support undelete')
 
     def empty_trash(self):
-        """Permanently remove trashed files. No-op where there is no trash."""
+        """Permanently remove trashed files. No-op where there is no trash, or where
+        purging it is the bucket's job (supports_empty_trash)."""
 
     def storage_info(self, folder=None):
         """

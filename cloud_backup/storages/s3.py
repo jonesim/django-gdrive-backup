@@ -35,7 +35,13 @@ class S3Storage(BackupStorage):
     permanent unless the bucket itself has versioning or lifecycle rules.
     """
 
-    supports_trash = False
+    # a versioned bucket's hidden previous versions are its trash: listed and restored
+    # with the read/write key alone. Purging them is the lifecycle rule's job - the key
+    # is deliberately unable to
+    supports_trash = True
+    supports_empty_trash = False
+    # what separates the key from the version id in a hidden version's file id
+    VERSION_SEPARATOR = '?versionId='
     metadata_workers = 8
     # CopyObject's ceiling - above it the copy has to be done in parts
     copy_object_limit = 5 * 1024 * 1024 * 1024
@@ -107,7 +113,7 @@ class S3Storage(BackupStorage):
 
     def list_files(self, folder, metadata_filter=None, deleted=False, include_metadata=False):
         if deleted:
-            return []
+            return self.hidden_versions(folder)
         prefix = folder['id'] + '/'
         objects = []
         for page in self.s3.get_paginator('list_objects_v2').paginate(Bucket=self.bucket,
@@ -123,6 +129,54 @@ class S3Storage(BackupStorage):
             if self.matches_metadata(f, metadata_filter):
                 files.append(f)
         return files
+
+    def hidden_versions(self, folder):
+        """Every non-current version under a folder, recursively, as files whose id
+        carries the version - what list_files(deleted=True) is on a versioned bucket. A
+        version is hidden by whatever came after it on the same key, a delete marker or a
+        newer version; that time is 'hidden', the start of the purge clock. Metadata is
+        not fetched - that would be a HEAD per version."""
+        by_key = {}
+        for entry in self.list_versions(folder['id'] + '/'):
+            by_key.setdefault(entry['key'], []).append(entry)
+        files = []
+        for key, entries in by_key.items():
+            entries.sort(key=lambda e: e['modified'])
+            for entry, successor in zip(entries, entries[1:]):
+                if entry['marker'] or entry['is_latest']:
+                    continue
+                files.append({'id': f"{key}{self.VERSION_SEPARATOR}{entry['version_id']}",
+                              'name': key.rsplit('/', 1)[-1],
+                              'size': entry['size'],
+                              'hash': None,
+                              'created': entry['modified'],
+                              'modified': entry['modified'],
+                              'hidden': successor['modified'],
+                              'metadata': {},
+                              'web_link': None})
+        return files
+
+    def restore_deleted(self, file_id):
+        """Make a hidden version current again with a server-side copy of it onto its
+        own key - needs nothing beyond read and write, no delete: whatever hid it (a
+        delete marker, an attacker's overwrite) just becomes a previous version. The
+        metadata travels with it; a >5GB copy goes multipart, which inherits nothing, so
+        it is always passed explicitly."""
+        key, version_id = file_id.rsplit(self.VERSION_SEPARATOR, 1)
+        head = self.s3.head_object(Bucket=self.bucket, Key=key, VersionId=version_id)
+        source = {'Bucket': self.bucket, 'Key': key, 'VersionId': version_id}
+        extra_args = {'Metadata': head.get('Metadata') or {}}
+        if head.get('ContentType'):
+            extra_args['ContentType'] = head['ContentType']
+        if head['ContentLength'] <= self.copy_object_limit:
+            self.s3.copy_object(Bucket=self.bucket, Key=key, CopySource=source,
+                                MetadataDirective='REPLACE', **extra_args)
+        else:
+            self.s3.copy(source, self.bucket, key, ExtraArgs=extra_args, Config=self.transfer_config)
+        restored = self.get_file(key)
+        if restored['size'] != head['ContentLength']:
+            raise IOError(f'Restored {key} is {restored["size"]} bytes, expected {head["ContentLength"]}')
+        return restored
 
     def list_folders(self, folder):
         prefix = folder['id'] + '/'
