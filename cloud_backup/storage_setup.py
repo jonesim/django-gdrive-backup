@@ -440,12 +440,18 @@ def storage_facts(config, storage_settings):
         if key not in ('backend', 'root') and storage_settings.get(key) is not None:
             facts.append((key.replace('_', ' ').title(), str(storage_settings[key])))
     facts.append(('Backup root', config.root))
-    facts.append(('Database folder', config.db_dir))
+    if config.include_db:
+        facts.append(('Database folder', config.db_dir))
+    else:
+        # a files-only destination: the database settings it inherited from the globals
+        # are not in force here, so none of them is a fact about it
+        facts.append(('Database', 'off - files only'))
     if config.restore_only:
         facts.append(('Restore only', 'yes - nothing is written to this destination'))
-    facts.append(('Lifecycle tiers', 'on' if config.db_tiers else 'off'))
-    if config.retention:
-        facts.append(('Retention', f'{len(config.retention)} rule(s) applied by the application'))
+    if config.include_db:
+        facts.append(('Lifecycle tiers', 'on' if config.db_tiers else 'off'))
+        if config.retention:
+            facts.append(('Retention', f'{len(config.retention)} rule(s) applied by the application'))
     facts.append(('Encryption', 'on' if config.encryption_key else 'off'))
     facts.append(('Changed files', config.changed_files))
     if storage_settings.get('lock'):
@@ -471,29 +477,31 @@ def check_config(name, shell=None):
         check['error'] = redact(e, getattr(settings, 'BACKUP_STORAGE', None) or {})
         return check
     storage_settings = config.storage_settings
+    # retention, tiers and the db folder are all about the dumps: a config with the
+    # database off inherits those settings but never acts on them (backup.py runs the
+    # prune and the promotion inside the db step), so the check ignores them too
+    tiers = config.db_tiers and config.include_db
+    prunes = bool(config.retention) and config.include_db
     check.update({'backend': storage_settings.get('backend', 'gdrive'),
                   'destination': storage_settings.get('bucket') or storage_settings.get('container') or config.root,
                   'root': config.root,
-                  'db_dir': config.db_dir,
+                  'db_dir': config.db_dir if config.include_db else None,
                   'backblaze': is_backblaze(storage_settings),
                   'restore_only': config.restore_only,
                   # what the application itself will do to the destination, which is what
                   # the key has to be allowed to do - a restore_only config does none of
                   # it, whatever its settings inherited
-                  'prunes': not config.restore_only and (bool(config.retention)
-                                                         or (config.db_tiers
-                                                             and config.db_tier_delete == DELETE_APP)),
+                  'prunes': not config.restore_only and (prunes or (tiers and config.db_tier_delete == DELETE_APP)),
                   'object_lock': not config.restore_only
                                  and (bool(storage_settings.get('lock'))
-                                      or bool(config.db_tiers and any(config.db_tier_lock_days.values()))),
-                  'lock_days': dict(config.db_tier_lock_days) if config.db_tiers and not config.restore_only else {},
-                  'lock_mode': config.db_tier_lock_mode if config.db_tiers and not config.restore_only else None,
-                  'app_deletes': bool(config.db_tiers and config.db_tier_delete == DELETE_APP
-                                      and not config.restore_only),
+                                      or bool(tiers and any(config.db_tier_lock_days.values()))),
+                  'lock_days': dict(config.db_tier_lock_days) if tiers and not config.restore_only else {},
+                  'lock_mode': config.db_tier_lock_mode if tiers and not config.restore_only else None,
+                  'app_deletes': bool(tiers and config.db_tier_delete == DELETE_APP and not config.restore_only),
                   'facts': storage_facts(config, storage_settings)})
     # the bucket, its lifecycle rules and its tiers belong to the config that writes them;
     # reporting them again here would double every warning on the machine that only reads
-    if config.db_tiers and not config.restore_only:
+    if tiers and not config.restore_only:
         check['expire_days'] = config.db_tier_expire_days
         check['purge_days'] = config.db_tier_purge_days
         if config.db_tier_delete == DELETE_LIFECYCLE:
@@ -529,13 +537,14 @@ def check_config(name, shell=None):
         # meant to be no rules, so measuring the tiers against them says nothing
         check['rows'] += storage.protection_info(
             tier_prefixes=(tier_prefixes(config.db_dir.strip('/'))
-                           if config.db_tiers and not check['app_deletes'] else None),
+                           if tiers and not check['app_deletes'] else None),
             expire_days=check['expire_days'], purge_days=check['purge_days'])
     except Exception as e:  # noqa: BLE001
         check['rows'].append({'label': 'Protection', 'status': 'Unknown',
                               'detail': redact(e, storage_settings)})
-    check['rows'] += [row for row in [deletion_row(config, storage)] if row]
-    if config.db_tiers and status['state'] == 'ok':
+    if tiers:
+        check['rows'] += [row for row in [deletion_row(config, storage)] if row]
+    if tiers and status['state'] == 'ok':
         check['rows'].append(promotion_row(storage, config))
         check['rows'] += [row for row in [lock_row(storage, config)] if row]
     if check['wanted_rules'] and status['state'] == 'ok':

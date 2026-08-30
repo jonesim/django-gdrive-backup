@@ -8,7 +8,7 @@ from io import BytesIO
 from urllib.parse import quote
 
 from ajax_helpers.mixins import AjaxHelpers, AjaxTaskMixin
-from ajax_helpers.templatetags.ajax_helpers import button_javascript, post_json_js
+from ajax_helpers.templatetags.ajax_helpers import post_json_js
 from ajax_helpers.utils import ajax_command, is_ajax
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.http import Http404
@@ -696,15 +696,12 @@ class BackupFilesView(BackupFilesBaseView):
     template_name = 'cloud_backup/backup.html'
 
 
-# the generated commands, kept per config so a copy button can hand back exactly what is
-# on the screen. A few KB of plain text with no credentials in it
-SETUP_COMMANDS_SESSION_KEY = 'cloud_backup_setup_commands'
-
-
-def setup_panel(check, copy_button=None, shell_buttons=''):
+def setup_panel(check, panel_id, copy_button=None, shell_buttons=''):
     """One destination's panel: what it is, what was found, and what to run about it.
     copy_button(index=None) renders a clipboard button for one command, or for all of
-    them when index is None; shell_buttons re-renders the panel for another shell."""
+    them when index is None; shell_buttons re-renders the panel for another shell.
+    Each command's <pre> is id'd {panel_id}_command_{index}, which is what the copy
+    buttons read."""
     # only rows that flag themselves count: most of protection_info is context, and
     # Object Lock being off is the normal state for a lifecycle-managed bucket
     actions = {row.get('action') for row in check['rows']}
@@ -741,7 +738,8 @@ def setup_panel(check, copy_button=None, shell_buttons=''):
             button = copy_button(index) if copy_button else ''
             html += (f'<p class="mb-1 mt-2"><small class="text-muted">{escape(command["note"])}</small></p>'
                      f'<div class="d-flex align-items-start">'
-                     f'<pre class="bg-light border p-2 mb-0 flex-grow-1 text-wrap">'
+                     f'<pre class="bg-light border p-2 mb-0 flex-grow-1 text-wrap setup-command" '
+                     f'id="{panel_id}_command_{index}">'
                      f'{escape(command["command"])}</pre>{button}</div>')
     return html + '</div>'
 
@@ -836,22 +834,24 @@ class StorageSetupBaseView(BackupConfigMixin, BackupContentMixin, PermissionRequ
         context['configs'] = [{'index': index, 'name': name} for index, name in enumerate(names)]
         return context
 
-    def copy_button(self, config, index=None):
+    def copy_button(self, panel_id, index=None):
         """A clipboard button for one command, or for all of them when index is None.
-        The copied text comes back from the server rather than being embedded in the
-        link: a lifecycle rule is quoted JSON, and MenuItem's javascript hrefs swap
-        double quotes for single ones, which would mangle it.
-
-        AJAX_BUTTON cannot carry which command to copy, so the button javascript is
-        built directly - the same thing AjaxButtonMenuItem does, without needing a
-        version of django-tab-menus that has it."""
-        kwargs = {'config': config} if index is None else {'config': config, 'index': index}
+        The text is read from the page's own <pre> elements (setup_panel), so what is
+        copied is exactly what is on the screen. It is neither embedded in the link - a
+        lifecycle rule is quoted JSON, and MenuItem's javascript hrefs swap double quotes
+        for single ones, which would mangle it - nor fetched from the server: the panels
+        load in parallel and each request saves the whole session, so anything cached
+        there per config is overwritten by whichever panel finishes last."""
+        if index is None:
+            text = (f"Array.from(document.querySelectorAll('#{panel_id} pre.setup-command'))"
+                    f".map(function(e){{return e.textContent}}).join('\\n')")
+        else:
+            text = f"document.getElementById('{panel_id}_command_{index}').textContent"
         # the button_group template supplies the btn class itself
         display = MenuItemDisplay('Copy all' if index is None else '', 'far fa-clipboard',
                                   'btn-outline-secondary btn-sm' + ('' if index is None else ' ml-2'))
         return HtmlMenu(self.request, 'button_group').add_items(
-            MenuItem(button_javascript('copy_commands', **kwargs).replace('"', "'"), display,
-                     link_type=MenuItem.JAVASCRIPT,
+            MenuItem(f'navigator.clipboard.writeText({text})', display, link_type=MenuItem.JAVASCRIPT,
                      tooltip='Copy to the clipboard')).render()
 
     def shell_buttons(self, config, shell):
@@ -869,29 +869,12 @@ class StorageSetupBaseView(BackupConfigMixin, BackupContentMixin, PermissionRequ
         if config not in names:
             return self.command_response('message', text=f'No backup configuration named {config}')
         check = storage_setup.check_config(config, shell=shell or storage_setup.shell_for_request(self.request))
-        commands = [command['command'] for command in check['commands']]
-        if commands:
-            # cached rather than regenerated on copy: regenerating re-runs the checks and
-            # could hand over text that differs from what is on the screen
-            cache = self.request.session.get(SETUP_COMMANDS_SESSION_KEY, {})
-            cache[config] = commands
-            self.request.session[SETUP_COMMANDS_SESSION_KEY] = cache
+        panel_id = f'setup_config_{names.index(config)}'
+        has_commands = bool(check['commands'])
         return self.command_response(
-            'html', selector=f'#setup_config_{names.index(config)}',
-            html=setup_panel(check, partial(self.copy_button, config) if commands else None,
-                             shell_buttons=self.shell_buttons(config, check['shell']) if commands else ''))
-
-    def button_copy_commands(self, config, index=None, **_kwargs):
-        commands = self.request.session.get(SETUP_COMMANDS_SESSION_KEY, {}).get(config)
-        if not commands:
-            return self.command_response('message', text='Reload the page and try again')
-        if index is None:
-            return self.command_response('clipboard', text='\n'.join(commands))
-        try:
-            command = commands[int(index)]
-        except (TypeError, ValueError, IndexError):
-            return self.command_response('message', text='Reload the page and try again')
-        return self.command_response('clipboard', text=command)
+            'html', selector=f'#{panel_id}',
+            html=setup_panel(check, panel_id, partial(self.copy_button, panel_id) if has_commands else None,
+                             shell_buttons=self.shell_buttons(config, check['shell']) if has_commands else ''))
 
 
 class StorageSetupView(StorageSetupBaseView):
